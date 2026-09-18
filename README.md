@@ -18,6 +18,8 @@ curl localhost:8100/v1/me -H "Authorization: Bearer osk_…"
 ```
 
 `cargo test` runs the contract tests through the real router.
+`OPUS_API_KEY=osk_… cargo run --example ws_drive -- wss://api.opustower.dev sesn_…`
+drives one turn over the WebSocket — the reference client for headsets.
 
 ## Deploy
 
