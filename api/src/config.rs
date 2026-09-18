@@ -13,6 +13,11 @@ pub struct Config {
     /// The control plane's bearer — the API's own upstream credential, never
     /// returned to or accepted from a client.
     pub control_plane_token: String,
+    /// Origins allowed by CORS, exact strings. Empty = no CORS headers at
+    /// all (native clients don't need them).
+    pub allowed_origins: Vec<String>,
+    /// Requests per minute per key, sustained and burst. 0 disables.
+    pub rate_limit_per_minute: u32,
 }
 
 fn required(name: &str) -> Result<String> {
@@ -48,6 +53,25 @@ impl Config {
                 .trim_end_matches('/')
                 .to_owned(),
             control_plane_token: required("CONTROL_PLANE_TOKEN")?,
+            allowed_origins: optional("ALLOWED_ORIGINS")
+                .map(|v| {
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|o| !o.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            rate_limit_per_minute: optional("RATE_LIMIT_PER_MINUTE")
+                .map(|v| {
+                    v.parse::<u32>().map_err(|_| {
+                        Error::Config(format!(
+                            "RATE_LIMIT_PER_MINUTE must be an integer, got {v:?}"
+                        ))
+                    })
+                })
+                .transpose()?
+                .unwrap_or(300),
         })
     }
 }

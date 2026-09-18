@@ -13,9 +13,11 @@ pub mod me;
 pub mod rig;
 pub mod sessions;
 pub mod usage;
+pub mod ws;
 
 use crate::auth::keys::Scope;
 use crate::auth::middleware::{authenticate, require, AuthState};
+use crate::auth::rate_limit::RateLimiter;
 use crate::db::Db;
 use crate::error::Error;
 use crate::upstream::control_plane::ControlPlane;
@@ -30,6 +32,7 @@ use utoipa_redoc::{Redoc, Servable};
 pub struct AppState {
     pub db: Db,
     pub control_plane: ControlPlane,
+    pub limiter: Arc<RateLimiter>,
 }
 
 /// A sub-router whose every route needs `scope`.
@@ -40,6 +43,7 @@ fn scoped(scope: Scope, router: OpenApiRouter<AppState>) -> OpenApiRouter<AppSta
 pub fn router(state: AppState) -> Router {
     let auth = Arc::new(AuthState {
         db: state.db.clone(),
+        limiter: state.limiter.clone(),
     });
 
     let protected = OpenApiRouter::new()
@@ -54,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         // sessions: GET and POST share paths with different scopes, so the
         // check is per handler (see sessions.rs).
         .merge(sessions::router())
+        .merge(ws::router())
         .route_layer(from_fn_with_state(auth, authenticate));
 
     let (router, api) = OpenApiRouter::with_openapi(crate::openapi::Doc::openapi())

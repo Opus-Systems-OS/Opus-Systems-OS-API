@@ -27,7 +27,7 @@ use utoipa_axum::routes;
 
 /// Session and agent ids are path segments upstream; keep them to the
 /// charset Anthropic uses so nothing else can be spliced into a URL.
-fn valid_id(id: &str) -> Result<()> {
+pub(super) fn valid_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 128
         && id

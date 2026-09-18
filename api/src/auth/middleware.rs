@@ -4,6 +4,7 @@
 //! `Error` so the body is the standard envelope.
 
 use crate::auth::keys::{self, Scope, ScopeSet};
+use crate::auth::rate_limit::RateLimiter;
 use crate::db::Db;
 use crate::error::Error;
 use axum::extract::{Request, State};
@@ -28,9 +29,9 @@ impl Principal {
     }
 }
 
-#[derive(Clone)]
 pub struct AuthState {
     pub db: Db,
+    pub limiter: Arc<RateLimiter>,
 }
 
 pub async fn authenticate(
@@ -49,6 +50,9 @@ pub async fn authenticate(
     let row = auth.db.key(id)?.ok_or(Error::Unauthorized)?;
     if row.revoked_at.is_some() || !keys::verify(secret, &row.secret_sha256) {
         return Err(Error::Unauthorized);
+    }
+    if let Err(retry_after_secs) = auth.limiter.check(&row.id) {
+        return Err(Error::RateLimited { retry_after_secs });
     }
     if let Err(e) = auth.db.touch_key(id) {
         tracing::warn!(key = id, error = %e, "could not record last_used_at");

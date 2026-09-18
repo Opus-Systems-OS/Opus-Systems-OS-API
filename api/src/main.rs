@@ -74,13 +74,30 @@ async fn run() -> error::Result<()> {
         &cfg.control_plane_url,
         &cfg.control_plane_token,
     )?;
-    let app = opus_api::app(v1::AppState { db, control_plane });
+    let limiter = std::sync::Arc::new(opus_api::auth::rate_limit::RateLimiter::new(
+        cfg.rate_limit_per_minute,
+    ));
+    let app = opus_api::app(
+        v1::AppState {
+            db,
+            control_plane,
+            limiter,
+        },
+        &cfg.allowed_origins,
+    );
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| error::Error::Config(format!("bind {addr}: {e}")))?;
-    tracing::info!(%addr, control_plane = %cfg.control_plane_url, db = %cfg.database_path.display(), "opus-api listening");
+    tracing::info!(
+        %addr,
+        control_plane = %cfg.control_plane_url,
+        db = %cfg.database_path.display(),
+        rate_limit_per_minute = cfg.rate_limit_per_minute,
+        cors_origins = cfg.allowed_origins.len(),
+        "opus-api listening"
+    );
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
