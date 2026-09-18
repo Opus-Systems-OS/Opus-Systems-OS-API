@@ -65,13 +65,45 @@ sent, live `event` frames through to `agent.message` ("17 times 23 is
 `api/examples/ws_drive.rs` is the reference client: what a headset does,
 minus the headset.
 
-## Stage 4 — next
+## Stage 4 — Mac half done 2026-09-18 ~05:05 UTC
 
-Move the Tauri app onto the API (`Iron-Fleet/app`): base URL
-`https://api.opustower.dev/v1`, a per-device key instead of the shared
-control-plane token, `/inference/models` → `/v1/rig`. Then Caddy exposes
-only `/webhooks/*` + `/healthz` on `fleet.opustower.dev`. Exit: both
-desktop apps on the API; Usage tab identical.
+The Tauri app talks to `https://api.opustower.dev/v1` with the `mac` key
+(Iron-Fleet PR #30; `/agents` → `/fleet/agents`, `/inference/models` →
+`/rig`). Caddy's `access-api.log` shows it polling `/v1/fleet/agents`,
+`/v1/rig`, `/v1/sessions` → 200. **Windows half + narrowing
+`fleet.opustower.dev` to the webhook are parked** in Iron-Fleet's plan
+("Rig backlog") until the user is at the rig.
+
+## Stage 5a — C# SDK done 2026-09-18 ~14:30 UTC
+
+`sdk/csharp/OpusSystems.Api` (PR #6, `1745ebd`): hand-written
+`netstandard2.1` client — `OpusClient` (REST) + `SessionSocket` (the
+WebSocket protocol as C# events), Newtonsoft.Json the only dependency,
+`OpusApiException` carrying the envelope. Not generated from the spec, on
+purpose (`sdk/csharp/README.md` says why). CI builds and unit-tests it.
+
+Exit test, live from the Mac (`OPUS_API_KEY=… OPUS_LIVE_SESSION=1 dotnet
+test`): 7/7 — me/agents/rig/usage typed, errors typed, and a jarvis
+session created through `OpusClient` then driven over `SessionSocket`
+to `agent.message` ("19 times 21 is 399.") and `end_turn`, with
+`LastReplyAsync` agreeing.
+
+Found on the way: a malformed session id was `502 upstream` (Anthropic's
+`invalid_request_error`, rendered 502 by the control plane). Fixed in
+both: the API maps Anthropic's caller-side errors to `400
+invalid_request` / `404 not_found` and makes type ↔ status always agree
+(#6); the control plane keeps an Anthropic 400 a 400 (Iron-Fleet #32).
+Both deployed.
+
+## Stage 5b — next
+
+The native Jarvis app (`Opus-Systems-OS/Jarvis`, Swift): replace its
+direct Anthropic calls with `/v1/sessions` on the `jarvis` agent so its
+spend lands in Usage. Needs its own plan (it is a different codebase).
+Also open: `GET /v1/fleet/environments` with queue stats (needs a
+control-plane route first; verify the Managed Agents environments shape on
+platform.claude.com before building), and a Unity sample once an editor
+is installed (Unity Hub is on the Mac, no editor yet).
 
 ## Operating
 
