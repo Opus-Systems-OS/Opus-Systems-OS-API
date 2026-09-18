@@ -95,15 +95,49 @@ invalid_request` / `404 not_found` and makes type ↔ status always agree
 (#6); the control plane keeps an Anthropic 400 a 400 (Iron-Fleet #32).
 Both deployed.
 
-## Stage 5b — next
+## Stage 5b — done 2026-09-18 ~16:05 UTC
 
-The native Jarvis app (`Opus-Systems-OS/Jarvis`, Swift): replace its
-direct Anthropic calls with `/v1/sessions` on the `jarvis` agent so its
-spend lands in Usage. Needs its own plan (it is a different codebase).
-Also open: `GET /v1/fleet/environments` with queue stats (needs a
-control-plane route first; verify the Managed Agents environments shape on
-platform.claude.com before building), and a Unity sample once an editor
-is installed (Unity Hub is on the Mac, no editor yet).
+The native Jarvis app (`Opus-Systems-OS/Jarvis`, PR #1 `613d95b`) is a
+fleet client. What it needed, now in the platform:
+
+- **control plane** (Iron-Fleet #33 `1833dba`): `POST /sessions` takes
+  `tools` (client-executed `custom` tools) and `system_suffix`, applied as
+  `agent_with_overrides` on the agent's *live* definition (a `tools`
+  override replaces in full, so the agent's own tools are restated); `POST
+  /sessions/{id}/tool-results` answers `agent.custom_tool_use`. The agent
+  resource never changes; other clients' sessions never see the tools.
+- **API** (#8 `3a514de`): the same on `/v1/sessions`, validated before any
+  round trip; WebSocket `tool_result` frame and `?deltas=true` → `delta`
+  frames; C# SDK `CustomTool`/`ToolResult`/`OnDelta`/`SendToolResultAsync`.
+- **App**: `OpusClient.swift` replaces the Anthropic client; SSE with
+  `event_deltas=agent.message` feeds the speaker; music tools declared per
+  session and run on the Mac; personality via `system_suffix`; model picker
+  gone; images refused (upstream user messages are text-only).
+
+Exit test, live on the Mac, `sesn_01XCKBqeihxVDr6J6RCDpjKk` (key
+`jarvis-mac`, `sessions:read,sessions:write`): spoken streamed replies
+("161."), then "play should i stay or should i go" → `agent.custom_tool_use
+play_music` → `requires_action` → Mac ran it → `user.custom_tool_result
+"Now playing … by The Clash."` → spoken confirmation. Five turns, 10 ¢,
+visible in the fleet's Usage. Earlier, through the control plane alone: a
+`get_device_time` tool round-trip and the suffix ("…, Sir.") for 6 ¢.
+
+Parked: iOS build/signing (`Sources/Shared` compiles for it), the
+Windows Python port (rig backlog), images (revisit if Managed Agents
+documents image blocks for `user.message`).
+
+## What's next
+
+The API's build order is complete except the Windows half of stage 4
+(rig backlog). Open threads, none blocking:
+
+- `GET /v1/fleet/environments` with queue stats (`workers_polling`,
+  depth) — needs a control-plane route; verify the Managed Agents
+  environments shape first.
+- A Unity sample against the C# SDK once an editor is installed.
+- A per-key allowed-tools policy if a client should be limited to a
+  declared tool set.
+- Whatever real use turns up.
 
 ## Operating
 
