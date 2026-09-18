@@ -45,18 +45,22 @@ pub enum Scope {
     /// `/v1/inference/*` — the rig's local models.
     #[serde(rename = "inference")]
     Inference,
+    /// `/v1/voice/*` — Jarvis's voice (text to speech).
+    #[serde(rename = "voice")]
+    Voice,
     /// Manage keys. Never granted to a device.
     #[serde(rename = "keys:admin")]
     KeysAdmin,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 6] = [
+    pub const ALL: [Scope; 7] = [
         Scope::FleetRead,
         Scope::SessionsRead,
         Scope::SessionsWrite,
         Scope::UsageRead,
         Scope::Inference,
+        Scope::Voice,
         Scope::KeysAdmin,
     ];
 
@@ -67,6 +71,7 @@ impl Scope {
             Scope::SessionsWrite => "sessions:write",
             Scope::UsageRead => "usage:read",
             Scope::Inference => "inference",
+            Scope::Voice => "voice",
             Scope::KeysAdmin => "keys:admin",
         }
     }

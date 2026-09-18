@@ -92,6 +92,10 @@ impl Error {
                 // renders any non-404 of them as 502). The caller-side ones
                 // are the caller's: a malformed session id is a 400, not a
                 // gateway failure.
+                // The voice provider: its 503 is "try later", anything else
+                // is our side's failure to get audio.
+                "voice" if *status == 503 => "upstream",
+                "voice" => "upstream",
                 "upstream" => match anthropic_kind(message) {
                     Some("invalid_request_error") => "invalid_request",
                     Some("not_found_error") => "not_found",

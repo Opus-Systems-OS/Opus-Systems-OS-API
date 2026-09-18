@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_envelope, call, call_raw, harness};
+use common::{assert_envelope, call, call_raw, harness, harness_with, Options};
 use opus_api::auth::keys::Scope;
 use serde_json::json;
 
@@ -593,4 +593,142 @@ async fn tool_results_route() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn voice_speak_streams_audio_with_the_server_side_voice() {
+    let h = harness_with(Options {
+        voice: true,
+        ..Options::default()
+    })
+    .await;
+    let key = h.key("mac", &[Scope::Voice]);
+
+    let (status, headers, bytes) = call_raw(
+        &h,
+        Method::POST,
+        "/v1/voice/speak",
+        Some(&key),
+        Some(json!({"text": "Good evening, sir."})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(headers["content-type"], "audio/mpeg");
+    assert_eq!(headers["x-accel-buffering"], "no");
+    assert_eq!(&bytes[..], b"ID3fake-mp3-audio-bytes");
+    let (_, path, body) = h.last_upstream();
+    assert_eq!(
+        path, "/v1/tts model=s2.1-pro-free",
+        "model header from server config"
+    );
+    let body = body.unwrap();
+    assert_eq!(
+        body["reference_id"], "voice_test",
+        "voice id from server config"
+    );
+    assert_eq!(body["text"], "Good evening, sir.");
+    assert_eq!(body["format"], "mp3");
+    assert_eq!(body["latency"], "low");
+
+    // Format and latency are validated; a client cannot pick a voice.
+    let (status, headers, _) = call_raw(
+        &h,
+        Method::POST,
+        "/v1/voice/speak",
+        Some(&key),
+        Some(json!({"text": "x", "format": "wav"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "audio/wav");
+    for bad in [
+        json!({"text": "x", "format": "flac"}),
+        json!({"text": "x", "latency": "instant"}),
+        json!({"text": ""}),
+        json!({"text": "x".repeat(2001)}),
+        json!({"text": "x", "reference_id": "someone-else"}),
+    ] {
+        let (status, _, json) =
+            call(&h, Method::POST, "/v1/voice/speak", Some(&key), Some(bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_envelope(&json, "invalid_request");
+    }
+
+    let (status, _, json) = call(&h, Method::GET, "/v1/voice", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["voice_id"], "voice_test");
+    assert_eq!(json["model"], "s2.1-pro-free");
+
+    // Scope.
+    let narrow = h.key("narrow", &[Scope::SessionsWrite]);
+    let (status, _, _) = call(
+        &h,
+        Method::POST,
+        "/v1/voice/speak",
+        Some(&narrow),
+        Some(json!({"text": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn voice_provider_errors_map() {
+    let h = harness_with(Options {
+        voice: true,
+        ..Options::default()
+    })
+    .await;
+    let key = h.key("mac", &[Scope::Voice]);
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/voice/speak",
+        Some(&key),
+        Some(json!({"text": "no credit"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_envelope(&json, "upstream");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("credits"));
+    let (status, headers, json) = call(
+        &h,
+        Method::POST,
+        "/v1/voice/speak",
+        Some(&key),
+        Some(json!({"text": "overloaded"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_envelope(&json, "upstream");
+    assert_eq!(headers["retry-after"], "3");
+}
+
+#[tokio::test]
+async fn voice_routes_absent_when_unconfigured() {
+    let h = harness().await;
+    let key = h.key("mac", &[Scope::Voice]);
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/voice/speak",
+        Some(&key),
+        Some(json!({"text": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_envelope(&json, "not_found");
+    let (_, _, spec) = call(&h, Method::GET, "/v1/openapi.json", None, None).await;
+    assert!(
+        spec["paths"].get("/voice/speak").is_none(),
+        "not in the spec either"
+    );
 }

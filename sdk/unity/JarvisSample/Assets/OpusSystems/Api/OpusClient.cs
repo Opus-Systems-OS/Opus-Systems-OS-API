@@ -145,6 +145,23 @@ namespace OpusSystems.Api
         public Task<JObject> InferenceEmbeddingsAsync(string model, string input, CancellationToken ct = default)
             => PostAsync<JObject>("inference/embeddings", new { model, input }, ct);
 
+        // ---- voice -------------------------------------------------------
+
+        /// <summary>Jarvis says <paramref name="text"/>: the audio bytes (mp3 by default). Needs the voice scope.</summary>
+        public async Task<byte[]> SpeakAsync(string text, string format = "mp3", string latency = "low", CancellationToken ct = default)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(BaseUrl, "voice/speak"));
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _key);
+            req.Content = new StringContent(JsonConvert.SerializeObject(new { text, format, latency }), Encoding.UTF8, "application/json");
+            using var res = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode)
+                throw Envelope(res, await res.Content.ReadAsStringAsync().ConfigureAwait(false));
+            return await res.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+        }
+
+        /// <summary>Which voice the API speaks with; throws not_found when voice is not configured.</summary>
+        public Task<VoiceInfo> VoiceInfoAsync(CancellationToken ct = default) => GetAsync<VoiceInfo>("voice", ct);
+
         // ---- plumbing ----------------------------------------------------
 
         private static string Id(string id)

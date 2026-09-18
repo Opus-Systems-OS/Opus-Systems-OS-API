@@ -77,11 +77,22 @@ async fn run() -> error::Result<()> {
     let limiter = std::sync::Arc::new(opus_api::auth::rate_limit::RateLimiter::new(
         cfg.rate_limit_per_minute,
     ));
+    let voice = match cfg.voice.clone() {
+        Some(v) => {
+            tracing::info!(voice_id = %v.voice_id, model = v.model.as_deref().unwrap_or("provider default"), "voice configured (Fish Audio)");
+            Some(opus_api::upstream::fish_audio::FishAudio::new(v)?)
+        }
+        None => {
+            tracing::info!("no FISH_AUDIO_API_KEY — /v1/voice/* disabled");
+            None
+        }
+    };
     let app = opus_api::app(
         v1::AppState {
             db,
             control_plane,
             limiter,
+            voice: std::sync::Arc::new(voice),
         },
         &cfg.allowed_origins,
     );

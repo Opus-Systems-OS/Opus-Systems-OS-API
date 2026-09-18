@@ -13,6 +13,7 @@ pub mod me;
 pub mod rig;
 pub mod sessions;
 pub mod usage;
+pub mod voice;
 pub mod ws;
 
 use crate::auth::keys::Scope;
@@ -21,6 +22,7 @@ use crate::auth::rate_limit::RateLimiter;
 use crate::db::Db;
 use crate::error::Error;
 use crate::upstream::control_plane::ControlPlane;
+use crate::upstream::fish_audio::FishAudio;
 use axum::middleware::from_fn_with_state;
 use axum::Router;
 use std::sync::Arc;
@@ -33,6 +35,9 @@ pub struct AppState {
     pub db: Db,
     pub control_plane: ControlPlane,
     pub limiter: Arc<RateLimiter>,
+    /// `Some` when `FISH_AUDIO_API_KEY` is set; otherwise `/v1/voice/*`
+    /// is not registered at all.
+    pub voice: Arc<Option<FishAudio>>,
 }
 
 /// A sub-router whose every route needs `scope`.
@@ -46,7 +51,7 @@ pub fn router(state: AppState) -> Router {
         limiter: state.limiter.clone(),
     });
 
-    let protected = OpenApiRouter::new()
+    let mut protected = OpenApiRouter::new()
         .merge(me::router())
         .merge(scoped(Scope::KeysAdmin, keys::router()))
         .merge(scoped(
@@ -58,8 +63,11 @@ pub fn router(state: AppState) -> Router {
         // sessions: GET and POST share paths with different scopes, so the
         // check is per handler (see sessions.rs).
         .merge(sessions::router())
-        .merge(ws::router())
-        .route_layer(from_fn_with_state(auth, authenticate));
+        .merge(ws::router());
+    if state.voice.is_some() {
+        protected = protected.merge(scoped(Scope::Voice, voice::router()));
+    }
+    let protected = protected.route_layer(from_fn_with_state(auth, authenticate));
 
     let (router, api) = OpenApiRouter::with_openapi(crate::openapi::Doc::openapi())
         .merge(health::router())

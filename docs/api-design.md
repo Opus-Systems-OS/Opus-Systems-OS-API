@@ -37,11 +37,12 @@ failures — no header, malformed, unknown id, wrong secret, revoked — answer
 | `sessions:write` | `POST /v1/sessions`, send message, interrupt, WebSocket send side |
 | `usage:read` | `GET /v1/usage`, `GET /v1/usage/export.csv` |
 | `inference` | `/v1/inference/*` |
+| `voice` | `/v1/voice/*` — Jarvis's voice (text to speech) |
 | `keys:admin` | `/v1/keys*` |
 
 Suggested grants: desktop apps — everything but `keys:admin`; a headset —
-`sessions:read`, `sessions:write`, `inference`; the native Jarvis app —
-`sessions:read`, `sessions:write`.
+`sessions:read`, `sessions:write`, `voice`, `inference`; the native Jarvis
+app — `sessions:read`, `sessions:write`, `voice`.
 
 There is no scope for creating agents or environments or changing budgets,
 because there are no such routes.
@@ -108,6 +109,20 @@ Stage 2 (live):
 | `GET /v1/inference/models` | `inference` | Ollama `/api/tags` |
 | `POST /v1/inference/chat` | `inference` | Ollama `/api/chat` body; NDJSON unless `stream:false` |
 | `POST /v1/inference/embeddings` | `inference` | Ollama `/api/embed` body |
+| `POST /v1/voice/speak` | `voice` | `{text (1–2000), format?: mp3|wav|pcm|opus, latency?: low|normal|balanced}` → audio bytes, streamed |
+| `GET /v1/voice` | `voice` | `{configured, voice_id, model}` |
+
+### Voice
+
+Jarvis's voice is one Fish Audio voice (`reference_id`), configured on the
+server (`JARVIS_VOICE_ID`, `FISH_AUDIO_MODEL`) with the provider key
+(`FISH_AUDIO_API_KEY`) held there. Clients send text and get audio; they
+cannot choose a voice, so every client sounds the same — the Mac app, the
+desktop app, a headset. The routes exist only when the key is configured
+(otherwise 404, and they are absent from the spec). Provider failures are
+`502 upstream` with a plain message (rejected key, exhausted credits) or
+`503` with `Retry-After` when the provider is overloaded. Fish Audio bills
+per character; the per-key rate limit bounds a runaway client.
 
 ### Client-executed tools
 
