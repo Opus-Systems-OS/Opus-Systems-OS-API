@@ -130,6 +130,13 @@ namespace OpusSystems.Api
         [JsonProperty("recent")] public List<SessionUsage> Recent { get; set; } = new List<SessionUsage>();
     }
 
+    public sealed class VoiceInfo
+    {
+        [JsonProperty("configured")] public bool Configured { get; set; }
+        [JsonProperty("voice_id")] public string VoiceId { get; set; } = "";
+        [JsonProperty("model")] public string? Model { get; set; }
+    }
+
     /// <summary>Helpers over Anthropic's event objects.</summary>
     public static class Events
     {

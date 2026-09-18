@@ -14,8 +14,10 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use opus_api::auth::keys::Scope;
 use opus_api::auth::rate_limit::RateLimiter;
+use opus_api::config::VoiceConfig;
 use opus_api::db::Db;
 use opus_api::upstream::control_plane::ControlPlane;
+use opus_api::upstream::fish_audio::FishAudio;
 use opus_api::v1::keys::create_key;
 use opus_api::v1::AppState;
 use serde_json::{json, Value};
@@ -24,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 pub const CP_TOKEN: &str = "cp-secret";
+pub const FISH_KEY: &str = "sk-fish-test";
 
 /// What the stub saw, for assertions about what reached upstream.
 #[derive(Default)]
@@ -46,6 +49,8 @@ pub struct Options {
     /// 0 = disabled (the default for tests).
     pub rate_limit_per_minute: u32,
     pub allowed_origins: Vec<String>,
+    /// Register `/v1/voice/*` against a stub Fish Audio.
+    pub voice: bool,
 }
 
 pub struct Harness {
@@ -112,6 +117,27 @@ pub async fn harness_with(opts: Options) -> Harness {
     tokio::spawn(async move {
         axum::serve(listener, stub_router(stub)).await.unwrap();
     });
+    let voice = if opts.voice {
+        let fl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fish_addr = fl.local_addr().unwrap();
+        let fish_seen = seen.clone();
+        tokio::spawn(async move {
+            axum::serve(fl, fish_router(fish_seen)).await.unwrap();
+        });
+        Some(
+            FishAudio::with_base_url(
+                VoiceConfig {
+                    fish_audio_api_key: FISH_KEY.into(),
+                    voice_id: "voice_test".into(),
+                    model: Some("s2.1-pro-free".into()),
+                },
+                &format!("http://{fish_addr}"),
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
     let db = Db::in_memory().unwrap();
     let control_plane = ControlPlane::new(&format!("http://{cp_addr}"), CP_TOKEN).unwrap();
     let app = opus_api::app(
@@ -119,6 +145,7 @@ pub async fn harness_with(opts: Options) -> Harness {
             db: db.clone(),
             control_plane,
             limiter: Arc::new(RateLimiter::new(opts.rate_limit_per_minute)),
+            voice: Arc::new(voice),
         },
         &opts.allowed_origins,
     );
@@ -443,4 +470,74 @@ async fn chat(headers: HeaderMap, Json(body): Json<Value>) -> Response {
 
 async fn embeddings(Json(body): Json<Value>) -> Json<Value> {
     Json(json!({"model": body["model"], "embeddings": [[0.1, 0.2, 0.3]]}))
+}
+
+// ---- the stub Fish Audio ---------------------------------------------
+
+fn fish_router(seen: Arc<Mutex<Seen>>) -> Router {
+    Router::new()
+        .route("/v1/tts", post(fish_tts))
+        .with_state(seen)
+}
+
+async fn fish_tts(
+    State(seen): State<Arc<Mutex<Seen>>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let model = headers
+        .get("model")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    seen.lock().unwrap().requests.push((
+        "POST".into(),
+        format!("/v1/tts model={model}"),
+        Some(body.clone()),
+    ));
+    if auth != format!("Bearer {FISH_KEY}") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"status":401,"message":"Unauthorized"})),
+        )
+            .into_response();
+    }
+    match body["text"].as_str().unwrap_or("") {
+        "no credit" => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(json!({"status":402,"message":"Insufficient API credit."})),
+        )
+            .into_response(),
+        "overloaded" => {
+            let mut r = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"status":503,"message":"overloaded"})),
+            )
+                .into_response();
+            r.headers_mut()
+                .insert(header::RETRY_AFTER, "3".parse().unwrap());
+            r
+        }
+        _ => {
+            let ct = match body["format"].as_str().unwrap_or("mp3") {
+                "wav" => "audio/wav",
+                "pcm" => "audio/pcm",
+                "opus" => "audio/opus",
+                _ => "audio/mpeg",
+            };
+            // Two chunks, like a streamed response.
+            let chunks = futures_util::stream::iter(vec![
+                Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"ID3fake-mp3-")),
+                Ok(bytes::Bytes::from_static(b"audio-bytes")),
+            ]);
+            Response::builder()
+                .status(200)
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from_stream(chunks))
+                .unwrap()
+        }
+    }
 }

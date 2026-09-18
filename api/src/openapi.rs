@@ -43,6 +43,7 @@ pub struct ErrorDetail {
         (name = "sessions", description = "Managed Agents sessions (sessions:read / sessions:write)"),
         (name = "usage", description = "Spend rollups and the CSV audit trail (usage:read)"),
         (name = "inference", description = "Local models on the rig (inference)"),
+        (name = "voice", description = "Jarvis's voice — text to speech (voice)"),
     )
 )]
 pub struct Doc;

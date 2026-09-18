@@ -33,7 +33,9 @@ it over the compose network.
   revocable. `keys:admin` is minted only by `opus-api keys create` on the
   host — never over HTTP.
 - **Scopes:** `fleet:read`, `sessions:read`, `sessions:write`, `usage:read`,
-  `inference`, `keys:admin`. A device key never gets `keys:admin`.
+  `inference`, `voice`, `keys:admin`. A device key never gets `keys:admin`.
+- **Jarvis's voice is server config.** `/v1/voice/speak` proxies Fish Audio
+  with the key and the voice id on the droplet; clients cannot pick a voice.
 - **No budget or fleet mutation, ever.** No route creates agents or
   environments or raises a cap. Same rule as `mcp-fleet`. A client may add
   *session-local* custom tools and a system suffix to the session it
@@ -52,7 +54,8 @@ it over the compose network.
 api/src/main.rs          CLI: serve (default) | keys create|list|revoke
 api/src/lib.rs           app(): /v1 + request-id + trace layers
 api/src/config.rs        PORT, DATABASE_PATH, CONTROL_PLANE_URL, CONTROL_PLANE_TOKEN,
-                         RATE_LIMIT_PER_MINUTE, ALLOWED_ORIGINS
+                         RATE_LIMIT_PER_MINUTE, ALLOWED_ORIGINS, FISH_AUDIO_API_KEY,
+                         JARVIS_VOICE_ID, FISH_AUDIO_MODEL
 api/src/error.rs         Error → status + envelope
 api/src/request_id.rs    x-request-id, span, final error body
 api/src/db.rs            SQLite: api_keys; migrate()

@@ -18,7 +18,23 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     /// Requests per minute per key, sustained and burst. 0 disables.
     pub rate_limit_per_minute: u32,
+    /// Fish Audio, for `/v1/voice/*`. `None` = the routes don't exist.
+    pub voice: Option<VoiceConfig>,
 }
+
+/// Jarvis's voice is server configuration: clients ask for speech, never
+/// for a voice.
+#[derive(Debug, Clone)]
+pub struct VoiceConfig {
+    pub fish_audio_api_key: String,
+    /// Fish Audio reference (voice model) id.
+    pub voice_id: String,
+    /// Fish Audio `model` header when set (e.g. `s2.1-pro-free`); unset lets
+    /// the provider default.
+    pub model: Option<String>,
+}
+
+pub const DEFAULT_VOICE_ID: &str = "d0fa91bb6d344790bd700389e80e5ccd";
 
 fn required(name: &str) -> Result<String> {
     std::env::var(name)
@@ -72,6 +88,12 @@ impl Config {
                 })
                 .transpose()?
                 .unwrap_or(300),
+            voice: optional("FISH_AUDIO_API_KEY").map(|key| VoiceConfig {
+                fish_audio_api_key: key,
+                voice_id: optional("JARVIS_VOICE_ID")
+                    .unwrap_or_else(|| DEFAULT_VOICE_ID.to_owned()),
+                model: optional("FISH_AUDIO_MODEL"),
+            }),
         })
     }
 }
