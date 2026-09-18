@@ -1,0 +1,6 @@
+/target
+/target.nosync
+.env
+*.db
+*.db-wal
+*.db-shm

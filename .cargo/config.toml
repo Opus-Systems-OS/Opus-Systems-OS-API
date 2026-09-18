@@ -1,0 +1,4 @@
+# Same reason as Iron-Fleet: a checkout under iCloud Drive syncs/evicts build
+# artifacts unless the folder ends in `.nosync`. Harmless elsewhere.
+[build]
+target-dir = "target.nosync"
