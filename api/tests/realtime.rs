@@ -319,3 +319,61 @@ async fn cors_only_for_listed_origins() {
         .unwrap();
     assert!(res.headers().get("access-control-allow-origin").is_none());
 }
+
+#[tokio::test]
+async fn websocket_tool_result_frame_and_deltas() {
+    let h = harness().await;
+    let key = h.all_scopes_key();
+    let mut ws = connect(
+        &h.ws_url("/v1/sessions/sesn_live/ws?history=false&deltas=true"),
+        Some(&key),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next_json(&mut ws).await["type"], "hello");
+
+    // With deltas on, the text fragments arrive as `delta` frames before
+    // the buffered agent.message event; event_start is dropped.
+    let d1 = next_json(&mut ws).await;
+    assert_eq!(d1["type"], "delta", "{d1}");
+    assert_eq!(d1["event_id"], "sevt_9");
+    assert_eq!(d1["text"], "17 times ");
+    let d2 = next_json(&mut ws).await;
+    assert_eq!(d2["text"], "23 is 391.");
+    let ev = next_json(&mut ws).await;
+    assert_eq!(ev["type"], "event");
+    assert_eq!(
+        ev["event"]["id"], "sevt_9",
+        "the authoritative event follows: {ev}"
+    );
+    let ev = next_json(&mut ws).await;
+    assert_eq!(ev["event"]["id"], "sevt_10");
+
+    // A custom tool call arrives as a plain event; the client answers with
+    // a tool_result frame.
+    h.push_event(json!({"id": "sevt_77", "type": "agent.custom_tool_use", "name": "play_music", "input": {"artist": "Daft Punk"}}));
+    let ev = next_json(&mut ws).await;
+    assert_eq!(ev["event"]["type"], "agent.custom_tool_use");
+    assert_eq!(ev["event"]["input"]["artist"], "Daft Punk");
+    send_json(
+        &mut ws,
+        json!({"type": "tool_result", "custom_tool_use_id": "sevt_77", "content": "Now playing: Around the World"}),
+    )
+    .await;
+    let sent = next_json(&mut ws).await;
+    assert_eq!(sent["type"], "sent", "{sent}");
+    assert_eq!(sent["data"][0]["type"], "user.custom_tool_result");
+    let (method, path, body) = h.last_upstream();
+    assert_eq!(
+        (method.as_str(), path.as_str()),
+        ("POST", "/sessions/sesn_live/tool-results")
+    );
+    assert_eq!(body.unwrap()["results"][0]["custom_tool_use_id"], "sevt_77");
+
+    // Malformed tool_result is an error frame, socket stays open.
+    send_json(&mut ws, json!({"type": "tool_result", "content": "x"})).await;
+    let err = next_json(&mut ws).await;
+    assert_eq!(err["type"], "error");
+    assert_eq!(err["error"]["type"], "invalid_request");
+    ws.close(None).await.unwrap();
+}

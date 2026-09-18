@@ -9,6 +9,9 @@
 //!   SSE stream and `/events` carry. History first (oldest first, unless
 //!   `?history=false`), then live, deduplicated on `event.id`.
 //! - `{"type":"sent","data":[…]}` — the events appended by a client frame.
+//! - `{"type":"delta","event_id":…,"text":…}` — with `?deltas=true`: a
+//!   fragment of an `agent.message` as it is generated. The full
+//!   `agent.message` event still follows and is authoritative.
 //! - `{"type":"error","error":{"type":…,"message":…}}` — a client frame was
 //!   rejected; the socket stays open.
 //! - `{"type":"pong"}` — answer to `ping`.
@@ -16,6 +19,8 @@
 //!
 //! client → server
 //! - `{"type":"message","task":"…"}` (needs `sessions:write`)
+//! - `{"type":"tool_result","custom_tool_use_id":…,"content":…,"is_error":false}`
+//!   (needs `sessions:write`) — answers an `agent.custom_tool_use` event
 //! - `{"type":"interrupt"}` (needs `sessions:write`)
 //! - `{"type":"ping"}`
 //!
@@ -50,12 +55,15 @@ use utoipa_axum::routes;
 pub struct WsQuery {
     /// Send the session's history before live events. Default true.
     pub history: Option<bool>,
+    /// Also send `delta` frames as `agent.message` text is generated.
+    /// Default false.
+    pub deltas: Option<bool>,
 }
 
 #[utoipa::path(get, path = "/sessions/{id}/ws", tag = "sessions", security(("api_key" = ["sessions:read"])),
     params(("id" = String, Path), WsQuery),
     responses(
-        (status = 101, description = "WebSocket. JSON frames with a `type`: server sends `hello`, then `event` frames (history, then live), `sent`/`error`/`pong` in answer to client frames, `closed` last. Client sends `message` {task} and `interrupt` (sessions:write) and `ping`."),
+        (status = 101, description = "WebSocket. JSON frames with a `type`: server sends `hello`, then `event` frames (history, then live; plus `delta` text fragments with `?deltas=true`), `sent`/`error`/`pong` in answer to client frames, `closed` last. Client sends `message` {task}, `tool_result` {custom_tool_use_id, content, is_error?}, `interrupt` (sessions:write) and `ping`."),
         (status = 401, body = crate::openapi::ErrorBody),
         (status = 403, body = crate::openapi::ErrorBody),
     ))]
@@ -71,12 +79,18 @@ pub async fn ws(
     super::sessions::valid_id(&id)?;
     // Open the live stream before upgrading, so an unknown session is a
     // clean 404 envelope rather than a socket that closes at once.
+    let deltas = q.deltas.unwrap_or(false);
+    let query: Vec<(&str, &str)> = if deltas {
+        vec![("event_deltas", "agent.message")]
+    } else {
+        vec![]
+    };
     let upstream = state
         .control_plane
-        .open::<Value>(Method::GET, &format!("/sessions/{id}/stream"), &[], None)
+        .open::<Value>(Method::GET, &format!("/sessions/{id}/stream"), &query, None)
         .await?;
     let history = q.history.unwrap_or(true);
-    tracing::info!(session = %id, history, "websocket opened");
+    tracing::info!(session = %id, history, deltas, "websocket opened");
     let cp = state.control_plane.clone();
     Ok(upgrade.on_upgrade(move |socket| run(socket, cp, who, id, request_id, upstream, history)))
 }
@@ -154,6 +168,24 @@ async fn run(
         tokio::select! {
             live = live_rx.recv() => match live {
                 Some(ev) => {
+                    // Delta previews (`event_start` / `event_delta`) are not
+                    // events and carry no `id`; forward the text fragments
+                    // as `delta` frames and drop the rest.
+                    match ev["type"].as_str() {
+                        Some("event_delta") => {
+                            let text = ev["delta"]["content"]["text"].as_str().unwrap_or("");
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let f = json!({"type": "delta", "event_id": ev["event_id"], "text": text});
+                            if tx.send(frame(f)).await.is_err() {
+                                break "client_closed";
+                            }
+                            continue;
+                        }
+                        Some("event_start") => continue,
+                        _ => {}
+                    }
                     if let Some(id) = ev["id"].as_str() {
                         if !seen.insert(id.to_owned()) {
                             continue;
@@ -241,6 +273,27 @@ async fn handle_client_frame(
             }
             .await
         }
+        "tool_result" => {
+            async {
+                who.require(Scope::SessionsWrite)?;
+                let body = super::sessions::ToolResults {
+                    results: vec![super::sessions::ToolResult {
+                        custom_tool_use_id: parsed["custom_tool_use_id"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
+                        content: parsed["content"].as_str().unwrap_or("").to_owned(),
+                        is_error: parsed["is_error"].as_bool().unwrap_or(false),
+                    }],
+                };
+                super::sessions::validate_tool_results(&body)?;
+                let (_, out) = cp
+                    .post(&format!("/sessions/{session_id}/tool-results"), &body)
+                    .await?;
+                Ok(frame(json!({"type": "sent", "data": out["data"]})))
+            }
+            .await
+        }
         "interrupt" => {
             async {
                 who.require(Scope::SessionsWrite)?;
@@ -252,7 +305,7 @@ async fn handle_client_frame(
             .await
         }
         other => Err(Error::InvalidRequest(format!(
-            "unknown frame type `{other}`; expected message, interrupt or ping"
+            "unknown frame type `{other}`; expected message, tool_result, interrupt or ping"
         ))),
     };
     match result {

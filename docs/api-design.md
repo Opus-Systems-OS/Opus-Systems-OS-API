@@ -95,11 +95,12 @@ Stage 2 (live):
 |---|---|---|
 | `GET /v1/fleet/agents` | `fleet:read` | `{data:[…]}`, the registry as synced; caps are cent strings |
 | `GET /v1/rig` | `fleet:read` | `{configured, online, models, reason}` — always 200 |
-| `POST /v1/sessions` | `sessions:write` | `{agent_slug, task, environment?, repositories?}` → 201 |
+| `POST /v1/sessions` | `sessions:write` | `{agent_slug, task, environment?, repositories?, tools?, system_suffix?}` → 201 |
 | `GET /v1/sessions` | `sessions:read` | `?agent_slug&limit&page&order`; Anthropic's page envelope |
 | `GET /v1/sessions/{id}` | `sessions:read` | The session object + `console_url` |
 | `GET /v1/sessions/{id}/events` | `sessions:read` | `?page&limit&types&order`; `order=desc&limit=1` = the latest |
 | `POST /v1/sessions/{id}/events` | `sessions:write` | `{task}` — a follow-up; resumes an idle session |
+| `POST /v1/sessions/{id}/tool-results` | `sessions:write` | `{results:[{custom_tool_use_id, content, is_error?}]}` — answers `agent.custom_tool_use` |
 | `POST /v1/sessions/{id}/interrupt` | `sessions:write` | Appends `user.interrupt` |
 | `GET /v1/sessions/{id}/stream` | `sessions:read` | SSE, byte-for-byte from upstream; `?event_deltas=` |
 | `GET /v1/usage` | `usage:read` | `?since&until`; `{window, by_agent, recent}` incl. `last_error` |
@@ -107,6 +108,19 @@ Stage 2 (live):
 | `GET /v1/inference/models` | `inference` | Ollama `/api/tags` |
 | `POST /v1/inference/chat` | `inference` | Ollama `/api/chat` body; NDJSON unless `stream:false` |
 | `POST /v1/inference/embeddings` | `inference` | Ollama `/api/embed` body |
+
+### Client-executed tools
+
+A client may declare tools that *it* runs — a headset's hand tracking, a
+laptop's Music app — on the session it creates: `tools: [{type: "custom",
+name, description, input_schema}]`. They are session-local: the agent is
+untouched and other clients' sessions never see them. When the agent calls
+one, the session emits `agent.custom_tool_use {id, name, input}` and idles
+with `stop_reason.type = "requires_action"`; the client runs the tool and
+answers with `POST /sessions/{id}/tool-results` (or the WebSocket
+`tool_result` frame), and the turn continues. `system_suffix` is the same
+idea for the prompt: a client's persona or device context, appended to the
+agent's system prompt for that session only.
 
 Session and event objects are Anthropic's, passed through unchanged; their
 shape is Anthropic's contract. Everything the API composes itself
@@ -117,7 +131,7 @@ Stage 3 (live):
 
 | Route | Scope | Notes |
 |---|---|---|
-| `GET /v1/sessions/{id}/ws` | `sessions:read` (+ `sessions:write` to send) | WebSocket; protocol below. `?history=false` skips history |
+| `GET /v1/sessions/{id}/ws` | `sessions:read` (+ `sessions:write` to send) | WebSocket; protocol below. `?history=false` skips history; `?deltas=true` adds text fragments |
 
 ## WebSocket protocol
 
@@ -134,7 +148,8 @@ Server → client, in order:
 |---|---|
 | `{"type":"hello","session_id","request_id"}` | First |
 | `{"type":"event","event":{…}}` | Each session event — the same object `/events` and the SSE stream carry. History first (oldest first) unless `?history=false`, then live. Deduplicated on `event.id`: a client never sees the same event twice |
-| `{"type":"sent","data":[…]}` | Answer to `message` / `interrupt`: the events appended |
+| `{"type":"delta","event_id","text"}` | With `?deltas=true`: a fragment of an `agent.message` as it is generated. The full `event` follows and is authoritative — speak the deltas, store the event |
+| `{"type":"sent","data":[…]}` | Answer to `message` / `tool_result` / `interrupt`: the events appended |
 | `{"type":"error","error":{"type","message"}}` | A client frame was rejected (bad JSON, unknown type, empty task, missing scope, upstream error). The socket stays open |
 | `{"type":"pong"}` | Answer to `ping` |
 | `{"type":"closed","reason"}` | Last frame before the server closes. `upstream_closed` = the session's stream ended (session terminated or expired) |
@@ -144,6 +159,7 @@ Client → server:
 | Frame | Needs |
 |---|---|
 | `{"type":"message","task":"…"}` | `sessions:write` — a follow-up; resumes an idle session |
+| `{"type":"tool_result","custom_tool_use_id","content","is_error"?}` | `sessions:write` — answers an `agent.custom_tool_use` event |
 | `{"type":"interrupt"}` | `sessions:write` |
 | `{"type":"ping"}` | — |
 

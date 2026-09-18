@@ -35,8 +35,10 @@ namespace OpusSystems.Api
         public event Action<JObject>? OnEvent;
         /// <summary>A client frame was rejected; the socket stays open.</summary>
         public event Action<string, string>? OnError;
-        /// <summary>Answer to a message/interrupt: the events appended.</summary>
+        /// <summary>Answer to a message/tool_result/interrupt: the events appended.</summary>
         public event Action<JArray>? OnSent;
+        /// <summary>With deltas enabled: (event id, text fragment) as a reply is generated. Speak these; store the event.</summary>
+        public event Action<string, string>? OnDelta;
         /// <summary>The server closed: reason is "upstream_closed" (session ended) or a transport error.</summary>
         public event Action<string>? OnClosed;
 
@@ -71,6 +73,16 @@ namespace OpusSystems.Api
         /// <summary>A follow-up user message (needs sessions:write).</summary>
         public Task SendAsync(string task, CancellationToken ct = default)
             => SendFrameAsync(new JObject { ["type"] = "message", ["task"] = task }, ct);
+
+        /// <summary>Answer an agent.custom_tool_use event (needs sessions:write).</summary>
+        public Task SendToolResultAsync(string customToolUseId, string content, bool isError = false, CancellationToken ct = default)
+            => SendFrameAsync(new JObject
+            {
+                ["type"] = "tool_result",
+                ["custom_tool_use_id"] = customToolUseId,
+                ["content"] = content,
+                ["is_error"] = isError,
+            }, ct);
 
         public Task InterruptAsync(CancellationToken ct = default)
             => SendFrameAsync(new JObject { ["type"] = "interrupt" }, ct);
@@ -116,6 +128,9 @@ namespace OpusSystems.Api
                             break;
                         case "sent":
                             OnSent?.Invoke(frame["data"] as JArray ?? new JArray());
+                            break;
+                        case "delta":
+                            OnDelta?.Invoke(frame.Value<string>("event_id") ?? "", frame.Value<string>("text") ?? "");
                             break;
                         case "error":
                             OnError?.Invoke(frame["error"]?.Value<string>("type") ?? "error",

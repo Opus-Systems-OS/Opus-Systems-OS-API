@@ -57,4 +57,31 @@ public class UnitTests
         Assert.Equal("https://api.opustower.dev/v1/", api.BaseUrl.ToString());
         await Assert.ThrowsAsync<ArgumentException>(() => api.GetSessionAsync("../keys"));
     }
+
+    [Fact]
+    public void CustomToolAndResultSerializeToTheWireShape()
+    {
+        var req = new CreateSessionRequest
+        {
+            AgentSlug = "jarvis",
+            Task = "play something",
+            Tools = new List<CustomTool> { new CustomTool { Name = "play_music", Description = "Play music on this device." } },
+            SystemSuffix = "Call me Sir.",
+        };
+        var json = JObject.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(req));
+        Assert.Equal("custom", json["tools"]![0]!["type"]);
+        Assert.Equal("object", json["tools"]![0]!["input_schema"]!["type"]);
+        Assert.Equal("Call me Sir.", json["system_suffix"]);
+        Assert.Null(json["environment"]);
+
+        var r = JObject.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(new ToolResult { CustomToolUseId = "sevt_1", Content = "ok" }));
+        Assert.Equal("sevt_1", r["custom_tool_use_id"]);
+        Assert.Null(r["is_error"]);
+
+        var use = JObject.Parse("{\"id\":\"sevt_7\",\"type\":\"agent.custom_tool_use\",\"name\":\"play_music\",\"input\":{\"artist\":\"Daft Punk\"}}");
+        Assert.Equal("play_music", Events.ToolName(use));
+        Assert.Equal("Daft Punk", Events.ToolInput(use)["artist"]);
+        var idle = JObject.Parse("{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"requires_action\",\"event_ids\":[\"sevt_7\"]}}");
+        Assert.True(Events.RequiresAction(idle));
+    }
 }

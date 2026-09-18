@@ -64,6 +64,96 @@ pub struct CreateSession {
     /// the agent's own. Only agents with a GitHub credential accept these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repositories: Vec<String>,
+    /// Tools *this client* executes, declared for this session only (the
+    /// agent is untouched; other clients' sessions never see them). When
+    /// the agent calls one, the session emits `agent.custom_tool_use` and
+    /// idles with `stop_reason.type = "requires_action"` until the client
+    /// answers via `POST /sessions/{id}/tool-results` (or the WebSocket
+    /// `tool_result` frame).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<CustomTool>,
+    /// Appended to the agent's system prompt for this session only, after
+    /// a blank line — a client's personality or device context. ≤ 4000 chars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_suffix: Option<String>,
+}
+
+/// A client-executed tool. `input_schema` is a JSON Schema object.
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CustomTool {
+    /// Always `custom`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// `[a-z0-9_]`, 1–64 chars, unique within the session.
+    pub name: String,
+    /// What it does and when to use it — the model reads this.
+    pub description: String,
+    #[schema(value_type = Object)]
+    pub input_schema: Value,
+}
+
+/// Answers to `agent.custom_tool_use` events.
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResults {
+    pub results: Vec<ToolResult>,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolResult {
+    /// The `id` of the `agent.custom_tool_use` event being answered.
+    pub custom_tool_use_id: String,
+    /// What the tool returned, as text.
+    pub content: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+}
+
+fn validate_custom_tools(tools: &[CustomTool]) -> Result<()> {
+    if tools.len() > 32 {
+        return Err(Error::InvalidRequest("at most 32 custom tools".into()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for t in tools {
+        if t.kind != "custom" {
+            return Err(Error::InvalidRequest(format!(
+                "tool `{}`: type must be `custom`",
+                t.name
+            )));
+        }
+        let ok = !t.name.is_empty()
+            && t.name.len() <= 64
+            && t.name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if !ok {
+            return Err(Error::InvalidRequest(format!(
+                "tool name `{}` must be 1-64 chars of [a-z0-9_]",
+                t.name
+            )));
+        }
+        if !seen.insert(t.name.as_str()) {
+            return Err(Error::InvalidRequest(format!(
+                "duplicate tool `{}`",
+                t.name
+            )));
+        }
+        if t.description.trim().is_empty() {
+            return Err(Error::InvalidRequest(format!(
+                "tool `{}` needs a description",
+                t.name
+            )));
+        }
+        if !t.input_schema.is_object() {
+            return Err(Error::InvalidRequest(format!(
+                "tool `{}`: input_schema must be an object",
+                t.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// What `POST /v1/sessions` returns: the new session's identity, where it
@@ -107,11 +197,20 @@ pub async fn create(
     }
     valid_id(&req.agent_slug)
         .map_err(|_| Error::InvalidRequest("agent_slug has unexpected characters".into()))?;
+    validate_custom_tools(&req.tools)?;
+    if let Some(sfx) = &req.system_suffix {
+        if sfx.chars().count() > 4_000 {
+            return Err(Error::InvalidRequest(
+                "system_suffix is longer than 4000 characters".into(),
+            ));
+        }
+    }
     let (_, created) = state.control_plane.post("/sessions", &req).await?;
     tracing::info!(
         agent = %req.agent_slug,
         session = created["session_id"].as_str().unwrap_or(""),
         environment = created["environment"].as_str().unwrap_or(""),
+        custom_tools = req.tools.len(),
         "session created"
     );
     Ok((StatusCode::CREATED, Json(created)))
@@ -266,6 +365,40 @@ pub async fn send(
     Ok(Json(out))
 }
 
+#[utoipa::path(post, path = "/sessions/{id}/tool-results", tag = "sessions", security(("api_key" = ["sessions:write"])),
+    params(("id" = String, Path)),
+    request_body = ToolResults,
+    responses((status = 200, description = "The appended `user.custom_tool_result` event(s): `{\"data\":[…]}`", body = Object)))]
+pub async fn tool_results(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+    Path(id): Path<String>,
+    body: std::result::Result<Json<ToolResults>, JsonRejection>,
+) -> Result<Json<Value>> {
+    who.require(Scope::SessionsWrite)?;
+    valid_id(&id)?;
+    let req = body_or_400(body)?;
+    validate_tool_results(&req)?;
+    let (_, out) = state
+        .control_plane
+        .post(&format!("/sessions/{id}/tool-results"), &req)
+        .await?;
+    tracing::info!(session = %id, results = req.results.len(), "tool results sent");
+    Ok(Json(out))
+}
+
+pub(super) fn validate_tool_results(req: &ToolResults) -> Result<()> {
+    if req.results.is_empty() {
+        return Err(Error::InvalidRequest("results must not be empty".into()));
+    }
+    for r in &req.results {
+        valid_id(&r.custom_tool_use_id).map_err(|_| {
+            Error::InvalidRequest("custom_tool_use_id has unexpected characters".into())
+        })?;
+    }
+    Ok(())
+}
+
 #[utoipa::path(post, path = "/sessions/{id}/interrupt", tag = "sessions", security(("api_key" = ["sessions:write"])),
     params(("id" = String, Path)),
     responses((status = 200, description = "The appended `user.interrupt` event: `{\"data\":[…]}`", body = Object)))]
@@ -329,6 +462,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(create, list))
         .routes(routes!(get))
         .routes(routes!(events, send))
+        .routes(routes!(tool_results))
         .routes(routes!(interrupt))
         .routes(routes!(stream))
 }

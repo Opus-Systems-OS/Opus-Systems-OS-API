@@ -287,7 +287,10 @@ async fn stream_is_sse_passthrough() {
     assert_eq!(headers["x-accel-buffering"], "no");
     let text = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(text.starts_with(": connected\n\n"), "{text}");
-    assert_eq!(text.matches("event: message\n").count(), 2);
+    // event_deltas requested: the upstream previews (event_start + two
+    // event_delta frames) pass through untouched ahead of the two events.
+    assert_eq!(text.matches("event: message\n").count(), 5, "{text}");
+    assert!(text.contains("\"type\":\"event_delta\""));
     assert!(text.contains("\"id\":\"sevt_10\""));
     let (_, path, _) = h.last_upstream();
     assert_eq!(path, "/sessions/sesn_1/stream?event_deltas=agent.message");
@@ -487,4 +490,107 @@ async fn spec_covers_stage_2() {
         spec["paths"]["/sessions"]["get"]["security"][0]["api_key"][0],
         "sessions:read"
     );
+}
+
+#[tokio::test]
+async fn custom_tools_and_system_suffix_reach_upstream_verbatim() {
+    let h = harness().await;
+    let key = h.all_scopes_key();
+    let body = json!({
+        "agent_slug": "jarvis",
+        "task": "play something",
+        "tools": [{"type": "custom", "name": "play_music", "description": "Play music on this device.",
+                   "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}}}],
+        "system_suffix": "Call me Sir."
+    });
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions",
+        Some(&key),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{json}");
+    let (_, _, sent) = h.last_upstream();
+    let sent = sent.unwrap();
+    assert_eq!(sent["tools"][0]["name"], "play_music");
+    assert_eq!(
+        sent["tools"][0]["input_schema"]["properties"]["title"]["type"],
+        "string"
+    );
+    assert_eq!(sent["system_suffix"], "Call me Sir.");
+
+    // Validation happens here, before any round trip.
+    let n = h.seen.lock().unwrap().requests.len();
+    for bad in [
+        json!([{"type": "agent_toolset_20260401", "name": "x", "description": "d", "input_schema": {}}]),
+        json!([{"type": "custom", "name": "Play Music", "description": "d", "input_schema": {}}]),
+        json!([{"type": "custom", "name": "x", "description": "", "input_schema": {}}]),
+        json!([{"type": "custom", "name": "x", "description": "d", "input_schema": "nope"}]),
+    ] {
+        let (status, _, json) = call(
+            &h,
+            Method::POST,
+            "/v1/sessions",
+            Some(&key),
+            Some(json!({"agent_slug": "jarvis", "task": "x", "tools": bad})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_envelope(&json, "invalid_request");
+    }
+    assert_eq!(
+        h.seen.lock().unwrap().requests.len(),
+        n,
+        "nothing reached upstream"
+    );
+}
+
+#[tokio::test]
+async fn tool_results_route() {
+    let h = harness().await;
+    let key = h.all_scopes_key();
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions/sesn_1/tool-results",
+        Some(&key),
+        Some(json!({"results": [{"custom_tool_use_id": "sevt_42", "content": "Now playing: Around the World"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"][0]["type"], "user.custom_tool_result");
+    assert_eq!(json["data"][0]["custom_tool_use_id"], "sevt_42");
+    let (method, path, body) = h.last_upstream();
+    assert_eq!(
+        (method.as_str(), path.as_str()),
+        ("POST", "/sessions/sesn_1/tool-results")
+    );
+    assert_eq!(
+        body.unwrap()["results"][0]["content"],
+        "Now playing: Around the World"
+    );
+
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions/sesn_1/tool-results",
+        Some(&key),
+        Some(json!({"results": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_envelope(&json, "invalid_request");
+
+    let reader = h.key("reader", &[Scope::SessionsRead]);
+    let (status, _, _) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions/sesn_1/tool-results",
+        Some(&reader),
+        Some(json!({"results": [{"custom_tool_use_id": "sevt_42", "content": "x"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
