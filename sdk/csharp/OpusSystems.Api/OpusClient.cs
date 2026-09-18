@@ -95,16 +95,24 @@ namespace OpusSystems.Api
         public Task<Page<JObject>> SendAsync(string sessionId, string task, CancellationToken ct = default)
             => PostAsync<Page<JObject>>("sessions/" + Id(sessionId) + "/events", new { task }, ct);
 
+        /// <summary>Answer agent.custom_tool_use events; the waiting turn continues.</summary>
+        public Task<Page<JObject>> SendToolResultsAsync(string sessionId, IEnumerable<ToolResult> results, CancellationToken ct = default)
+            => PostAsync<Page<JObject>>("sessions/" + Id(sessionId) + "/tool-results", new { results = new List<ToolResult>(results) }, ct);
+
         public Task<Page<JObject>> InterruptAsync(string sessionId, CancellationToken ct = default)
             => PostAsync<Page<JObject>>("sessions/" + Id(sessionId) + "/interrupt", null, ct);
 
         /// <summary>Open the session's WebSocket. See <see cref="SessionSocket"/>.</summary>
-        public Task<SessionSocket> OpenSessionSocketAsync(string sessionId, bool history = true, CancellationToken ct = default)
+        /// <param name="deltas">Also receive <see cref="SessionSocket.OnDelta"/> text fragments as replies are generated.</param>
+        public Task<SessionSocket> OpenSessionSocketAsync(string sessionId, bool history = true, bool deltas = false, CancellationToken ct = default)
         {
+            var q = new List<string>();
+            if (!history) q.Add("history=false");
+            if (deltas) q.Add("deltas=true");
             var b = new UriBuilder(new Uri(BaseUrl, "sessions/" + Id(sessionId) + "/ws"))
             {
                 Scheme = BaseUrl.Scheme == "https" ? "wss" : "ws",
-                Query = history ? "" : "history=false",
+                Query = string.Join("&", q),
             };
             return SessionSocket.ConnectAsync(b.Uri, _key, ct);
         }

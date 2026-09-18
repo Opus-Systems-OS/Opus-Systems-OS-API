@@ -35,7 +35,9 @@ it over the compose network.
 - **Scopes:** `fleet:read`, `sessions:read`, `sessions:write`, `usage:read`,
   `inference`, `keys:admin`. A device key never gets `keys:admin`.
 - **No budget or fleet mutation, ever.** No route creates agents or
-  environments or raises a cap. Same rule as `mcp-fleet`.
+  environments or raises a cap. Same rule as `mcp-fleet`. A client may add
+  *session-local* custom tools and a system suffix to the session it
+  creates — those never touch the agent.
 - **Headsets get a WebSocket.** C# has `ClientWebSocket` and no SSE. SSE
   passthrough stays for the desktop apps.
 - Conventions as in Iron-Fleet: `thiserror` enum → `IntoResponse`,

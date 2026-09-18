@@ -207,6 +207,7 @@ fn stub_router(state: StubState) -> Router {
         .route("/sessions/{id}/events", get(events).post(send_event))
         .route("/sessions/{id}/stream", get(stream))
         .route("/sessions/{id}/interrupt", post(interrupt))
+        .route("/sessions/{id}/tool-results", post(tool_results))
         .route("/usage", get(usage))
         .route("/usage/export.csv", get(usage_csv))
         .route("/inference/models", get(models))
@@ -332,16 +333,44 @@ async fn interrupt() -> Json<Value> {
     Json(json!({"data":[{"id":"sevt_3","type":"user.interrupt"}]}))
 }
 
+async fn tool_results(Json(body): Json<Value>) -> Json<Value> {
+    let data: Vec<Value> = body["results"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            json!({"id": format!("sevt_tr{i}"), "type": "user.custom_tool_result",
+                   "custom_tool_use_id": r["custom_tool_use_id"],
+                   "content": [{"type": "text", "text": r["content"]}]})
+        })
+        .collect();
+    Json(json!({"data": data}))
+}
+
 /// Two canned frames; for `sesn_live` also whatever tests `push_event`, for
 /// as long as the client stays connected — like the real stream. Other ids
 /// end after the canned frames so body-collecting tests finish.
-async fn stream(State(state): State<StubState>, Path(id): Path<String>) -> Response {
+async fn stream(
+    State(state): State<StubState>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     if id == "sesn_missing" {
         return cp_error(404, "upstream", "not_found_error: session not found");
     }
     let rx = state.live.subscribe();
     let endless = id == "sesn_live";
-    let head = ": connected\n\nevent: message\ndata: {\"id\":\"sevt_9\",\"type\":\"agent.message\"}\n\nevent: message\ndata: {\"id\":\"sevt_10\",\"type\":\"session.status_idle\"}\n\n";
+    // With event_deltas, the real stream previews the agent.message as
+    // event_start + event_delta frames before the buffered event.
+    let preview = if q.get("event_deltas").map(String::as_str) == Some("agent.message") {
+        "event: message\ndata: {\"type\":\"event_start\",\"event\":{\"type\":\"agent.message\",\"id\":\"sevt_9\"}}\n\nevent: message\ndata: {\"type\":\"event_delta\",\"event_id\":\"sevt_9\",\"delta\":{\"type\":\"content_delta\",\"index\":0,\"content\":{\"type\":\"text\",\"text\":\"17 times \"}}}\n\nevent: message\ndata: {\"type\":\"event_delta\",\"event_id\":\"sevt_9\",\"delta\":{\"type\":\"content_delta\",\"index\":0,\"content\":{\"type\":\"text\",\"text\":\"23 is 391.\"}}}\n\n"
+    } else {
+        ""
+    };
+    let head = format!("{}{}", ": connected\n\n", preview)
+        + "event: message\ndata: {\"id\":\"sevt_9\",\"type\":\"agent.message\"}\n\nevent: message\ndata: {\"id\":\"sevt_10\",\"type\":\"session.status_idle\"}\n\n";
     let live = futures_util::stream::unfold((rx, endless), |(mut rx, endless)| async move {
         if !endless {
             return None;

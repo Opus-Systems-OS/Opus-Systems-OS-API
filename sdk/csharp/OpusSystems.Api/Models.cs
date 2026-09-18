@@ -43,6 +43,28 @@ namespace OpusSystems.Api
         [JsonProperty("task")] public string Task { get; set; } = "";
         [JsonProperty("environment", NullValueHandling = NullValueHandling.Ignore)] public string? Environment { get; set; }
         [JsonProperty("repositories", NullValueHandling = NullValueHandling.Ignore)] public List<string>? Repositories { get; set; }
+        /// <summary>Tools this client executes, for this session only. When the agent calls one,
+        /// answer the agent.custom_tool_use event with <see cref="OpusClient.SendToolResultsAsync"/>
+        /// or <see cref="SessionSocket.SendToolResultAsync"/>.</summary>
+        [JsonProperty("tools", NullValueHandling = NullValueHandling.Ignore)] public List<CustomTool>? Tools { get; set; }
+        /// <summary>Appended to the agent's system prompt for this session only (persona, device context). ≤ 4000 chars.</summary>
+        [JsonProperty("system_suffix", NullValueHandling = NullValueHandling.Ignore)] public string? SystemSuffix { get; set; }
+    }
+
+    /// <summary>A client-executed tool. Name is [a-z0-9_]{1,64}; InputSchema is a JSON Schema object.</summary>
+    public sealed class CustomTool
+    {
+        [JsonProperty("type")] public string Type { get; set; } = "custom";
+        [JsonProperty("name")] public string Name { get; set; } = "";
+        [JsonProperty("description")] public string Description { get; set; } = "";
+        [JsonProperty("input_schema")] public JObject InputSchema { get; set; } = new JObject { ["type"] = "object", ["properties"] = new JObject() };
+    }
+
+    public sealed class ToolResult
+    {
+        [JsonProperty("custom_tool_use_id")] public string CustomToolUseId { get; set; } = "";
+        [JsonProperty("content")] public string Content { get; set; } = "";
+        [JsonProperty("is_error", DefaultValueHandling = DefaultValueHandling.Ignore)] public bool IsError { get; set; }
     }
 
     public sealed class CreatedSession
@@ -129,6 +151,15 @@ namespace OpusSystems.Api
 
         /// <summary>stop_reason.type of a session.status_idle, e.g. "end_turn"; null otherwise.</summary>
         public static string? StopReason(JObject ev) => ev["stop_reason"]?.Value<string>("type");
+
+        /// <summary>For agent.custom_tool_use: the tool name; null otherwise.</summary>
+        public static string? ToolName(JObject ev) => Type(ev) == "agent.custom_tool_use" ? ev.Value<string>("name") : null;
+
+        /// <summary>For agent.custom_tool_use: the input object (may be empty).</summary>
+        public static JObject ToolInput(JObject ev) => ev["input"] as JObject ?? new JObject();
+
+        /// <summary>True when a session.status_idle is the wait for a tool result, not the end of the turn.</summary>
+        public static bool RequiresAction(JObject ev) => StopReason(ev) == "requires_action";
 
         /// <summary>"type: message" of a session.error; null otherwise.</summary>
         public static string? Error(JObject ev)
