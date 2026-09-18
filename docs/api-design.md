@@ -58,9 +58,10 @@ Every non-2xx body:
 |---|---|---|
 | `unauthorized` | 401 | Key missing, malformed, unknown, wrong, or revoked |
 | `forbidden` | 403 | Key lacks the scope; message names it |
-| `not_found` | 404 | No such route or resource |
+| `not_found` | 404 | No such route, session, agent or environment |
 | `method_not_allowed` | 405 | Route exists, method does not |
-| `invalid_request` | 400 / 415 / 422 | Bad body, unknown field, bad parameter — or the control plane said so |
+| `conflict` | 409 | The environment exists but is not provisioned yet |
+| `invalid_request` | 400 / 404 / 415 / 422 | Bad body, unknown field, bad parameter — or the control plane / Ollama said so (an unknown model is a 404 of this type) |
 | `rate_limited` | 429 | `Retry-After` header in seconds |
 | `rig_offline` | 503 | Inference asked for while the rig is off; `Retry-After` |
 | `upstream` | 502 | The control plane could not be reached or answered unexpectedly |
@@ -88,12 +89,29 @@ Stage 1 (live):
 | `DELETE /v1/keys/{id}` | `keys:admin` | 204; 404 if absent or already revoked |
 | `GET /v1/openapi.json`, `GET /v1/docs` | — | The spec, and Redoc over it |
 
-Stage 2 (next): `GET /v1/fleet/agents`; `POST/GET /v1/sessions`,
-`GET /v1/sessions/{id}`, `GET/POST /v1/sessions/{id}/events`,
-`GET /v1/sessions/{id}/stream` (SSE), `POST /v1/sessions/{id}/interrupt`;
-`GET /v1/usage`, `GET /v1/usage/export.csv`; `GET /v1/inference/models`,
-`POST /v1/inference/chat` (NDJSON when streaming), `POST /v1/inference/embeddings`;
-`GET /v1/rig`.
+Stage 2 (live):
+
+| Route | Scope | Notes |
+|---|---|---|
+| `GET /v1/fleet/agents` | `fleet:read` | `{data:[…]}`, the registry as synced; caps are cent strings |
+| `GET /v1/rig` | `fleet:read` | `{configured, online, models, reason}` — always 200 |
+| `POST /v1/sessions` | `sessions:write` | `{agent_slug, task, environment?, repositories?}` → 201 |
+| `GET /v1/sessions` | `sessions:read` | `?agent_slug&limit&page&order`; Anthropic's page envelope |
+| `GET /v1/sessions/{id}` | `sessions:read` | The session object + `console_url` |
+| `GET /v1/sessions/{id}/events` | `sessions:read` | `?page&limit&types&order`; `order=desc&limit=1` = the latest |
+| `POST /v1/sessions/{id}/events` | `sessions:write` | `{task}` — a follow-up; resumes an idle session |
+| `POST /v1/sessions/{id}/interrupt` | `sessions:write` | Appends `user.interrupt` |
+| `GET /v1/sessions/{id}/stream` | `sessions:read` | SSE, byte-for-byte from upstream; `?event_deltas=` |
+| `GET /v1/usage` | `usage:read` | `?since&until`; `{window, by_agent, recent}` incl. `last_error` |
+| `GET /v1/usage/export.csv` | `usage:read` | Audit CSV, oldest first |
+| `GET /v1/inference/models` | `inference` | Ollama `/api/tags` |
+| `POST /v1/inference/chat` | `inference` | Ollama `/api/chat` body; NDJSON unless `stream:false` |
+| `POST /v1/inference/embeddings` | `inference` | Ollama `/api/embed` body |
+
+Session and event objects are Anthropic's, passed through unchanged; their
+shape is Anthropic's contract. Everything the API composes itself
+(`fleet/agents`, `rig`, `usage`, the create-session request and response)
+is typed in the spec. Request bodies reject unknown fields.
 
 Stage 3: `GET /v1/sessions/{id}/ws`.
 

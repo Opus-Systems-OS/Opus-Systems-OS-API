@@ -1078,6 +1078,7 @@ name = "opus-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "clap",
  "getrandom 0.3.4",
  "http",
@@ -1310,6 +1311,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

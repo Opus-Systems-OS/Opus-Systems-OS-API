@@ -14,7 +14,7 @@ pub struct ErrorBody {
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct ErrorDetail {
-    /// One of: unauthorized, forbidden, not_found, invalid_request,
+    /// One of: unauthorized, forbidden, not_found, conflict, invalid_request,
     /// method_not_allowed, rate_limited, upstream, rig_offline, internal.
     #[serde(rename = "type")]
     pub kind: String,
@@ -39,6 +39,10 @@ pub struct ErrorDetail {
         (name = "health", description = "Liveness"),
         (name = "auth", description = "The presented key"),
         (name = "keys", description = "Key administration (keys:admin)"),
+        (name = "fleet", description = "The fleet as configured, and the rig (fleet:read)"),
+        (name = "sessions", description = "Managed Agents sessions (sessions:read / sessions:write)"),
+        (name = "usage", description = "Spend rollups and the CSV audit trail (usage:read)"),
+        (name = "inference", description = "Local models on the rig (inference)"),
     )
 )]
 pub struct Doc;

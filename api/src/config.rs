@@ -11,8 +11,7 @@ pub struct Config {
     /// The control plane, on the compose network: `http://control-plane:8080`.
     pub control_plane_url: String,
     /// The control plane's bearer — the API's own upstream credential, never
-    /// returned to or accepted from a client. Read by stage 2's upstream client.
-    #[allow(dead_code)]
+    /// returned to or accepted from a client.
     pub control_plane_token: String,
 }
 

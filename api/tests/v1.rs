@@ -1,77 +1,20 @@
 //! Stage 1 contract tests: auth, scopes, the error envelope, request ids,
 //! the spec. Everything goes through the real router with an in-memory DB.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
+use common::{assert_envelope, call, harness};
 use http_body_util::BodyExt;
 use opus_api::auth::keys::Scope;
-use opus_api::db::Db;
 use opus_api::v1::keys::create_key;
-use opus_api::v1::AppState;
 use serde_json::Value;
 use tower::ServiceExt;
 
-struct Harness {
-    app: axum::Router,
-    db: Db,
-}
-
-fn harness() -> Harness {
-    let db = Db::in_memory().unwrap();
-    let app = opus_api::app(AppState { db: db.clone() });
-    Harness { app, db }
-}
-
-async fn call(
-    h: &Harness,
-    method: Method,
-    path: &str,
-    key: Option<&str>,
-    body: Option<Value>,
-) -> (StatusCode, http::HeaderMap, Value) {
-    let mut req = Request::builder().method(method).uri(path);
-    if let Some(k) = key {
-        req = req.header(header::AUTHORIZATION, format!("Bearer {k}"));
-    }
-    let req = match body {
-        Some(b) => req
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(b.to_string()))
-            .unwrap(),
-        None => req.body(Body::empty()).unwrap(),
-    };
-    let res = h.app.clone().oneshot(req).await.unwrap();
-    let status = res.status();
-    let headers = res.headers().clone();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-            panic!(
-                "non-JSON body for {status}: {}",
-                String::from_utf8_lossy(&bytes)
-            )
-        })
-    };
-    (status, headers, json)
-}
-
-fn assert_envelope(json: &Value, kind: &str) {
-    assert_eq!(json["error"]["type"], kind, "body: {json}");
-    assert!(json["error"]["message"].is_string(), "body: {json}");
-    assert!(
-        json["error"]["request_id"]
-            .as_str()
-            .map(|s| s.starts_with("req_"))
-            .unwrap_or(false),
-        "body: {json}"
-    );
-}
-
 #[tokio::test]
 async fn health_is_public_and_versioned() {
-    let h = harness();
+    let h = harness().await;
     let (status, headers, json) = call(&h, Method::GET, "/v1/health", None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["status"], "ok");
@@ -81,7 +24,7 @@ async fn health_is_public_and_versioned() {
 
 #[tokio::test]
 async fn me_needs_a_valid_key() {
-    let h = harness();
+    let h = harness().await;
     let (status, _, json) = call(&h, Method::GET, "/v1/me", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_envelope(&json, "unauthorized");
@@ -119,7 +62,7 @@ async fn me_needs_a_valid_key() {
 
 #[tokio::test]
 async fn keys_admin_scope_gates_key_management() {
-    let h = harness();
+    let h = harness().await;
     let device = create_key(&h.db, "quest-3", &[Scope::SessionsWrite]).unwrap();
     let admin = create_key(&h.db, "ops", &[Scope::KeysAdmin]).unwrap();
 
@@ -195,7 +138,7 @@ async fn keys_admin_scope_gates_key_management() {
 
 #[tokio::test]
 async fn axum_rejections_wear_the_envelope_too() {
-    let h = harness();
+    let h = harness().await;
     let admin = create_key(&h.db, "ops", &[Scope::KeysAdmin]).unwrap();
 
     // Unknown route.
@@ -238,7 +181,7 @@ async fn axum_rejections_wear_the_envelope_too() {
 
 #[tokio::test]
 async fn request_id_is_honoured_when_sane_and_replaced_otherwise() {
-    let h = harness();
+    let h = harness().await;
     let req = Request::builder()
         .uri("/v1/health")
         .header("x-request-id", "quest-42_abc")
@@ -265,7 +208,7 @@ async fn request_id_is_honoured_when_sane_and_replaced_otherwise() {
 
 #[tokio::test]
 async fn openapi_lists_every_route_with_security() {
-    let h = harness();
+    let h = harness().await;
     let (status, _, spec) = call(&h, Method::GET, "/v1/openapi.json", None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(spec["openapi"].as_str().unwrap()[..2], *"3.");

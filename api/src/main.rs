@@ -70,7 +70,11 @@ async fn run() -> error::Result<()> {
         return keys_command(&db, action);
     }
 
-    let app = opus_api::app(v1::AppState { db });
+    let control_plane = opus_api::upstream::control_plane::ControlPlane::new(
+        &cfg.control_plane_url,
+        &cfg.control_plane_token,
+    )?;
+    let app = opus_api::app(v1::AppState { db, control_plane });
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
     let listener = tokio::net::TcpListener::bind(addr)
