@@ -1,14 +1,11 @@
-# Builds the API image and pushes it to GHCR. The droplet only pulls.
+# fmt, clippy and tests on every push and PR; the image is built and pushed
+# to GHCR only from main. The droplet only pulls.
 name: image
 
 on:
   push:
     branches: [main]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - api/**
-      - .github/workflows/image.yml
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -28,6 +25,7 @@ jobs:
 
   build:
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

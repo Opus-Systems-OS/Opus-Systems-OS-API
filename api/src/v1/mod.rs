@@ -5,14 +5,20 @@
 //! its scope applied as a `route_layer`. Every route is registered through
 //! `utoipa_axum` so the spec and the router cannot drift apart.
 
+pub mod fleet;
 pub mod health;
+pub mod inference;
 pub mod keys;
 pub mod me;
+pub mod rig;
+pub mod sessions;
+pub mod usage;
 
 use crate::auth::keys::Scope;
 use crate::auth::middleware::{authenticate, require, AuthState};
 use crate::db::Db;
 use crate::error::Error;
+use crate::upstream::control_plane::ControlPlane;
 use axum::middleware::from_fn_with_state;
 use axum::Router;
 use std::sync::Arc;
@@ -23,6 +29,7 @@ use utoipa_redoc::{Redoc, Servable};
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    pub control_plane: ControlPlane,
 }
 
 /// A sub-router whose every route needs `scope`.
@@ -38,6 +45,15 @@ pub fn router(state: AppState) -> Router {
     let protected = OpenApiRouter::new()
         .merge(me::router())
         .merge(scoped(Scope::KeysAdmin, keys::router()))
+        .merge(scoped(
+            Scope::FleetRead,
+            fleet::router().merge(rig::router()),
+        ))
+        .merge(scoped(Scope::UsageRead, usage::router()))
+        .merge(scoped(Scope::Inference, inference::router()))
+        // sessions: GET and POST share paths with different scopes, so the
+        // check is per handler (see sessions.rs).
+        .merge(sessions::router())
         .route_layer(from_fn_with_state(auth, authenticate));
 
     let (router, api) = OpenApiRouter::with_openapi(crate::openapi::Doc::openapi())

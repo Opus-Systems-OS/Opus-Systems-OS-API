@@ -37,13 +37,13 @@ pub enum Error {
     Db(#[from] rusqlite::Error),
     /// A non-2xx from the control plane, already reduced to its own
     /// `{error:{type,message}}` body. `status` is the upstream status;
-    /// `kind` is upstream's type, which becomes ours when it is one a client
-    /// can act on (`rig_offline`, `invalid_request`, `not_found`).
+    /// `kind` is upstream's type, mapped to ours in `kind()`.
     #[error("upstream {status}: {kind}: {message}")]
     Upstream {
         status: u16,
         kind: String,
         message: String,
+        retry_after: Option<u32>,
     },
     #[error("upstream transport: {0}")]
     UpstreamTransport(#[from] reqwest::Error),
@@ -71,10 +71,18 @@ impl Error {
             Error::InvalidRequest(_) => "invalid_request",
             Error::RateLimited { .. } => "rate_limited",
             Error::Db(_) => "internal",
-            Error::Upstream { kind, .. } => match kind.as_str() {
+            // The control plane's kinds, in our vocabulary. Anything it
+            // reports about *itself* (database, config, Anthropic transport)
+            // is an `upstream` failure from the client's point of view.
+            Error::Upstream { kind, status, .. } => match kind.as_str() {
                 "rig_offline" => "rig_offline",
-                "invalid_request" | "unknown_agent" | "unknown_environment" => "invalid_request",
-                "environment_not_provisioned" => "invalid_request",
+                "invalid_request" => "invalid_request",
+                "unknown_agent" | "unknown_environment" => "not_found",
+                "environment_not_provisioned" => "conflict",
+                // Ollama's own 4xx (unknown model, bad body) passes through
+                // the control plane as `inference`; it is the caller's.
+                "inference" if (400..500).contains(status) => "invalid_request",
+                "upstream" if *status == 404 => "not_found",
                 _ => "upstream",
             },
             Error::UpstreamTransport(_) => "upstream",
@@ -91,12 +99,12 @@ impl Error {
             Error::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             // The control plane's status is meaningful to the caller for the
             // client-side kinds (400/404/409/503); the rest is our gateway's
-            // failure to get an answer.
+            // failure to get an answer — including 401, which means *our*
+            // token is wrong, not the caller's.
             Error::Upstream { status, .. } => match *status {
                 400 | 404 | 409 | 503 => {
                     StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
                 }
-                401 => StatusCode::BAD_GATEWAY, // our token is wrong, not the caller's
                 _ => StatusCode::BAD_GATEWAY,
             },
             Error::UpstreamTransport(_) => StatusCode::BAD_GATEWAY,
@@ -133,8 +141,19 @@ impl IntoResponse for Error {
             tracing::warn!(error = %self, kind = self.kind(), "request rejected");
         }
         let mut res = status.into_response();
-        if let Error::RateLimited { retry_after_secs } = &self {
-            if let Ok(v) = retry_after_secs.to_string().parse() {
+        let retry_after = match &self {
+            Error::RateLimited { retry_after_secs } => Some(*retry_after_secs),
+            Error::Upstream {
+                retry_after: Some(s),
+                ..
+            } => Some(*s),
+            // A rig that is off answers in ~5 s (the connect timeout); tell
+            // the client not to hammer it even if upstream forgot the header.
+            Error::Upstream { kind, .. } if kind == "rig_offline" => Some(5),
+            _ => None,
+        };
+        if let Some(secs) = retry_after {
+            if let Ok(v) = secs.to_string().parse() {
                 res.headers_mut().insert(http::header::RETRY_AFTER, v);
             }
         }
@@ -153,6 +172,7 @@ pub fn envelope_for_status(status: StatusCode, text: &str) -> Envelope {
         StatusCode::UNAUTHORIZED => "unauthorized",
         StatusCode::FORBIDDEN => "forbidden",
         StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        StatusCode::CONFLICT => "conflict",
         s if s.is_client_error() => "invalid_request",
         _ => "internal",
     };

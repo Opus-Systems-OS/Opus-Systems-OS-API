@@ -7,6 +7,7 @@ pub mod db;
 pub mod error;
 pub mod openapi;
 pub mod request_id;
+pub mod upstream;
 pub mod v1;
 
 use axum::Router;
