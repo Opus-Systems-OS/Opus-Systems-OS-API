@@ -32,6 +32,9 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet build sdk/csharp -c Release
       - run: dotnet test sdk/csharp
+      # The Unity sample carries a copy of the SDK sources (no symlinks in
+      # Unity); Unity itself needs a license and does not run here.
+      - run: sdk/unity/sync-sdk.sh --check
 
   build:
     needs: test

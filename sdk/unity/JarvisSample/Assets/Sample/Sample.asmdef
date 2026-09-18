@@ -1,0 +1,14 @@
+{
+  "name": "OpusSystems.Sample",
+  "rootNamespace": "",
+  "references": ["OpusSystems.Api"],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

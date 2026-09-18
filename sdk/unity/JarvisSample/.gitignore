@@ -1,0 +1,21 @@
+# Unity: only Assets/, Packages/, ProjectSettings/ are source.
+/Library/
+/Logs/
+/Temp/
+/obj/
+/Build/
+/Builds/
+/UserSettings/
+/.vs/
+/.idea/
+*.csproj
+*.sln
+*.slnx
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+crashlytics-build.properties
