@@ -31,12 +31,29 @@ Gotchas found:
   one and cargo keeps the empty lib. The Dockerfile removes the crate's
   `.fingerprint` as well as its `deps`.
 
-## Stage 2 — next
+## Stage 2 — done 2026-09-18 ~04:17 UTC
 
-`upstream/control_plane.rs` + `v1/{fleet,sessions,usage,inference,rig}.rs`,
-per `CLAUDE.md`. `CONTROL_PLANE_TOKEN` is already in the droplet `.env`
-and reaches the container. Exit: a jarvis session driven end to end through
-`api.opustower.dev` with the `mac` key.
+`d040822` deployed. Every fleet route is behind the door with scopes,
+validation before any round trip, byte-for-byte streams, and upstream
+errors in our vocabulary (PR #2; 23 tests against a stub control plane that
+401s anything but `CONTROL_PLANE_TOKEN`).
+
+Exit test, live from the Mac with the `mac` key: `/v1/fleet/agents` (four
+agents, cent-string caps), `/v1/rig` → `online:false` with the connect
+error as `reason` (rig off), `/v1/inference/models` → `503 rig_offline` +
+`Retry-After: 5`, `/v1/usage` + CSV matching the control plane's, then
+jarvis session `sesn_017LJ8vSBDwouo8dqssuajS2`: `POST /v1/sessions` → 201,
+history via `/events?types=`, `GET /stream` → `: connected` then live
+`data:` frames, `POST /events` → 200, `POST /interrupt` → 200 with the
+`user.interrupt` appended, `GET /sessions/{id}` → idle, 6 ¢ of 50 ¢.
+
+CI now runs fmt/clippy/tests on pull requests; the image builds only from
+`main` (the PR for stage 2 initially had no CI at all).
+
+## Stage 3 — next
+
+`GET /v1/sessions/{id}/ws` for headsets (protocol in `api-design.md`),
+per-key rate limits, CORS. Exit: a WebSocket client drives a jarvis turn.
 
 ## Operating
 
