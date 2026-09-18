@@ -113,17 +113,56 @@ shape is Anthropic's contract. Everything the API composes itself
 (`fleet/agents`, `rig`, `usage`, the create-session request and response)
 is typed in the spec. Request bodies reject unknown fields.
 
-Stage 3: `GET /v1/sessions/{id}/ws`.
+Stage 3 (live):
 
-## WebSocket protocol (stage 3, to be finalised then)
+| Route | Scope | Notes |
+|---|---|---|
+| `GET /v1/sessions/{id}/ws` | `sessions:read` (+ `sessions:write` to send) | WebSocket; protocol below. `?history=false` skips history |
 
-One socket per session. Server → client frames are the session's events as
-JSON, the same objects the SSE stream carries. Client → server:
+## WebSocket protocol
 
-```json
-{"type": "message", "task": "…"}
-{"type": "interrupt"}
-```
+One socket per session. The bearer goes in the `Authorization` header of
+the upgrade request (Unity's `ClientWebSocket.Options.SetRequestHeader`).
+A refused upgrade is an ordinary HTTP error with the envelope: 401, 403,
+404 (no such session), 400 (not an upgrade request).
 
-On connect the server sends history (oldest first), then live events;
-frames carry the event `id` so a reconnecting client can dedupe.
+Every frame, both directions, is a JSON object with a `type`.
+
+Server → client, in order:
+
+| Frame | When |
+|---|---|
+| `{"type":"hello","session_id","request_id"}` | First |
+| `{"type":"event","event":{…}}` | Each session event — the same object `/events` and the SSE stream carry. History first (oldest first) unless `?history=false`, then live. Deduplicated on `event.id`: a client never sees the same event twice |
+| `{"type":"sent","data":[…]}` | Answer to `message` / `interrupt`: the events appended |
+| `{"type":"error","error":{"type","message"}}` | A client frame was rejected (bad JSON, unknown type, empty task, missing scope, upstream error). The socket stays open |
+| `{"type":"pong"}` | Answer to `ping` |
+| `{"type":"closed","reason"}` | Last frame before the server closes. `upstream_closed` = the session's stream ended (session terminated or expired) |
+
+Client → server:
+
+| Frame | Needs |
+|---|---|
+| `{"type":"message","task":"…"}` | `sessions:write` — a follow-up; resumes an idle session |
+| `{"type":"interrupt"}` | `sessions:write` |
+| `{"type":"ping"}` | — |
+
+The server opens the live stream *before* listing history, so an event
+emitted between the two is buffered and delivered once, after history.
+A reconnecting client simply connects again; with `history=true` it gets
+the full transcript, with `history=false` only what happens next.
+
+## Rate limits
+
+Per key, token bucket: `RATE_LIMIT_PER_MINUTE` (default 300) is both the
+sustained rate and the burst. Over it → `429 rate_limited` with
+`Retry-After` in seconds. Public routes (`/v1/health`, the spec, the docs)
+are not limited. A WebSocket counts once, at the upgrade.
+
+## CORS
+
+`ALLOWED_ORIGINS` (comma-separated exact origins) enables CORS for those
+origins only: methods GET/POST/DELETE, headers `authorization`,
+`content-type`, `x-request-id`; exposes `x-request-id`, `retry-after`,
+`content-disposition`. Unset → no CORS headers at all, which is right for
+native clients.

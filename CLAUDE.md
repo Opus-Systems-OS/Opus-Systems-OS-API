@@ -49,13 +49,16 @@ it over the compose network.
 ```
 api/src/main.rs          CLI: serve (default) | keys create|list|revoke
 api/src/lib.rs           app(): /v1 + request-id + trace layers
-api/src/config.rs        PORT, DATABASE_PATH, CONTROL_PLANE_URL, CONTROL_PLANE_TOKEN
+api/src/config.rs        PORT, DATABASE_PATH, CONTROL_PLANE_URL, CONTROL_PLANE_TOKEN,
+                         RATE_LIMIT_PER_MINUTE, ALLOWED_ORIGINS
 api/src/error.rs         Error → status + envelope
 api/src/request_id.rs    x-request-id, span, final error body
 api/src/db.rs            SQLite: api_keys; migrate()
 api/src/auth/keys.rs     mint/parse/verify, Scope
 api/src/auth/middleware.rs  authenticate → Principal; require(scope)
-api/src/v1/              one file per area, each an OpenApiRouter
+api/src/v1/              one file per area, each an OpenApiRouter; ws.rs is the headset channel
+api/src/sse.rs           SSE parser for the WebSocket bridge
+api/src/auth/rate_limit.rs  per-key token bucket
 api/src/openapi.rs       title, security scheme, ErrorBody
 api/tests/v1.rs          contract tests
 api/Dockerfile           two-stage, same shape as Iron-Fleet's

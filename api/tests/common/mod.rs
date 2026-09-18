@@ -10,8 +10,10 @@ use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use opus_api::auth::keys::Scope;
+use opus_api::auth::rate_limit::RateLimiter;
 use opus_api::db::Db;
 use opus_api::upstream::control_plane::ControlPlane;
 use opus_api::v1::keys::create_key;
@@ -35,13 +37,25 @@ struct StubState {
     seen: Arc<Mutex<Seen>>,
     /// `Some(status, body)` makes `/inference/models` answer that instead of 200.
     rig: Arc<Mutex<Option<(u16, Value)>>>,
+    /// Live events for the stub's SSE stream; tests push into it.
+    live: tokio::sync::broadcast::Sender<Value>,
+}
+
+#[derive(Default)]
+pub struct Options {
+    /// 0 = disabled (the default for tests).
+    pub rate_limit_per_minute: u32,
+    pub allowed_origins: Vec<String>,
 }
 
 pub struct Harness {
     pub app: axum::Router,
     pub db: Db,
     pub seen: Arc<Mutex<Seen>>,
+    /// The app served on a real port, for WebSocket tests.
+    pub addr: std::net::SocketAddr,
     rig: Arc<Mutex<Option<(u16, Value)>>>,
+    live: tokio::sync::broadcast::Sender<Value>,
 }
 
 impl Harness {
@@ -69,27 +83,59 @@ impl Harness {
     pub fn last_upstream(&self) -> (String, String, Option<Value>) {
         self.seen.lock().unwrap().requests.last().cloned().unwrap()
     }
+
+    /// Emit a live event on the stub's SSE stream.
+    pub fn push_event(&self, ev: Value) {
+        let _ = self.live.send(ev);
+    }
+
+    pub fn ws_url(&self, path: &str) -> String {
+        format!("ws://{}{}", self.addr, path)
+    }
 }
 
 pub async fn harness() -> Harness {
+    harness_with(Options::default()).await
+}
+
+pub async fn harness_with(opts: Options) -> Harness {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let rig = Arc::new(Mutex::new(None));
+    let (live, _) = tokio::sync::broadcast::channel(64);
     let stub = StubState {
         seen: seen.clone(),
         rig: rig.clone(),
+        live: live.clone(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let cp_addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, stub_router(stub)).await.unwrap();
     });
     let db = Db::in_memory().unwrap();
-    let control_plane = ControlPlane::new(&format!("http://{addr}"), CP_TOKEN).unwrap();
-    let app = opus_api::app(AppState {
-        db: db.clone(),
-        control_plane,
+    let control_plane = ControlPlane::new(&format!("http://{cp_addr}"), CP_TOKEN).unwrap();
+    let app = opus_api::app(
+        AppState {
+            db: db.clone(),
+            control_plane,
+            limiter: Arc::new(RateLimiter::new(opts.rate_limit_per_minute)),
+        },
+        &opts.allowed_origins,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let served = app.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, served).await.unwrap();
     });
-    Harness { app, db, seen, rig }
+    Harness {
+        app,
+        db,
+        seen,
+        addr,
+        rig,
+        live,
+    }
 }
 
 /// One request through the real router; body parsed as JSON when present.
@@ -275,12 +321,34 @@ async fn interrupt() -> Json<Value> {
     Json(json!({"data":[{"id":"sevt_3","type":"user.interrupt"}]}))
 }
 
-async fn stream() -> Response {
-    let frames = ": connected\n\nevent: message\ndata: {\"id\":\"sevt_9\",\"type\":\"agent.message\"}\n\nevent: message\ndata: {\"id\":\"sevt_10\",\"type\":\"session.status_idle\"}\n\n";
+/// Two canned frames; for `sesn_live` also whatever tests `push_event`, for
+/// as long as the client stays connected — like the real stream. Other ids
+/// end after the canned frames so body-collecting tests finish.
+async fn stream(State(state): State<StubState>, Path(id): Path<String>) -> Response {
+    if id == "sesn_missing" {
+        return cp_error(404, "upstream", "not_found_error: session not found");
+    }
+    let rx = state.live.subscribe();
+    let endless = id == "sesn_live";
+    let head = ": connected\n\nevent: message\ndata: {\"id\":\"sevt_9\",\"type\":\"agent.message\"}\n\nevent: message\ndata: {\"id\":\"sevt_10\",\"type\":\"session.status_idle\"}\n\n";
+    let live = futures_util::stream::unfold((rx, endless), |(mut rx, endless)| async move {
+        if !endless {
+            return None;
+        }
+        match rx.recv().await {
+            Ok(v) => Some((format!("event: message\ndata: {v}\n\n"), (rx, endless))),
+            Err(_) => None,
+        }
+    });
+    let body =
+        futures_util::stream::once(
+            async move { Ok::<_, std::io::Error>(bytes::Bytes::from(head)) },
+        )
+        .chain(live.map(|s| Ok(bytes::Bytes::from(s))));
     Response::builder()
         .status(200)
         .header(header::CONTENT_TYPE, "text/event-stream")
-        .body(Body::from(frames))
+        .body(Body::from_stream(body))
         .unwrap()
 }
 
