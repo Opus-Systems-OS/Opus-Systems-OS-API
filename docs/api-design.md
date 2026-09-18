@@ -58,10 +58,10 @@ Every non-2xx body:
 |---|---|---|
 | `unauthorized` | 401 | Key missing, malformed, unknown, wrong, or revoked |
 | `forbidden` | 403 | Key lacks the scope; message names it |
-| `not_found` | 404 | No such route, session, agent or environment |
+| `not_found` | 404 | No such route, session, agent or environment — ours or Anthropic's |
 | `method_not_allowed` | 405 | Route exists, method does not |
 | `conflict` | 409 | The environment exists but is not provisioned yet |
-| `invalid_request` | 400 / 404 / 415 / 422 | Bad body, unknown field, bad parameter — or the control plane / Ollama said so (an unknown model is a 404 of this type) |
+| `invalid_request` | 400 / 415 / 422 | Bad body, unknown field, bad parameter, malformed id — ours, the control plane's, Anthropic's or Ollama's (an unknown model is one of these) |
 | `rate_limited` | 429 | `Retry-After` header in seconds |
 | `rig_offline` | 503 | Inference asked for while the rig is off; `Retry-After` |
 | `upstream` | 502 | The control plane could not be reached or answered unexpectedly |

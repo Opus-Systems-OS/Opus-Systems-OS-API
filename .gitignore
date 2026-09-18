@@ -4,3 +4,7 @@
 *.db
 *.db-wal
 *.db-shm
+# .NET (sdk/csharp)
+bin/
+obj/
+*.user

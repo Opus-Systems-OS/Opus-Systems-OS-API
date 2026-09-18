@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- netstandard2.1: the profile Unity 2021+ supports. No dependency beyond
+       Newtonsoft.Json, which Unity ships as com.unity.nuget.newtonsoft-json.
+       Drop this folder into a Unity project's Assets/ (with an asmdef) or
+       reference the built DLL. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>9.0</LangVersion>
+    <RootNamespace>OpusSystems.Api</RootNamespace>
+    <PackageId>OpusSystems.Api</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Client for the Opus Systems OS API: fleet, sessions (REST + WebSocket), usage, inference.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+</Project>

@@ -301,6 +301,17 @@ async fn get_session(Path(id): Path<String>) -> Response {
     if id == "sesn_missing" {
         return cp_error(404, "upstream", "not_found_error: session not found");
     }
+    if id == "sesn_malformed" {
+        // What the live control plane does with Anthropic's 400: renders it 502.
+        return cp_error(
+            502,
+            "upstream",
+            "invalid_request_error: Invalid session ID: sesn_malformed",
+        );
+    }
+    if id == "sesn_outage" {
+        return cp_error(502, "upstream", "overloaded_error: Overloaded");
+    }
     Json(json!({"id": id, "status": "idle", "agent": {"system": "SECRET"}, "console_url": "https://platform.claude.com/x/sesn_1"})).into_response()
 }
 
