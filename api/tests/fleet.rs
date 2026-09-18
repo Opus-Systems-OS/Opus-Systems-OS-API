@@ -384,9 +384,16 @@ async fn inference_models_chat_embeddings_and_rig_offline() {
         Some(json!({"model": "missing", "messages": [], "stream": false})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "type and status agree: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "type and status agree: {json}"
+    );
     assert_envelope(&json, "invalid_request");
-    assert!(json["error"]["message"].as_str().unwrap().contains("missing"));
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("missing"));
 
     let (status, _, json) = call(
         &h,
