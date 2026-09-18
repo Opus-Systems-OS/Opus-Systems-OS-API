@@ -134,7 +134,13 @@ The API's build order is complete except the Windows half of stage 4
 - `GET /v1/fleet/environments` with queue stats (`workers_polling`,
   depth) — needs a control-plane route; verify the Managed Agents
   environments shape first.
-- A Unity sample against the C# SDK once an editor is installed.
+- ~~A Unity sample against the C# SDK~~ — done 2026-09-18 (#10,
+  `sdk/unity/JarvisSample`, Unity 6000.6.2f1): EditMode 3/3 incl. live
+  `Me`/`Rig`, PlayMode 1/1 with a real turn streamed over the WebSocket
+  under Unity's runtime. Next for the Quest: Android Build Support in the
+  Hub, Meta XR/OpenXR packages, a world-space panel + speech in place of
+  the IMGUI console. No headset was available; everything runs in the
+  editor.
 - A per-key allowed-tools policy if a client should be limited to a
   declared tool set.
 - Whatever real use turns up.
