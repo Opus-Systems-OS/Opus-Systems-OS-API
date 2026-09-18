@@ -1,0 +1,141 @@
+using System.Collections.Generic;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+namespace OpusSystems.Api
+{
+    // Everything the API composes itself is typed here. Session and event
+    // objects are Anthropic's and are exposed as JObject: their shape is
+    // Anthropic's contract, and a headset mostly wants event["type"] and
+    // the text blocks, which the helpers below extract.
+
+    public sealed class Me
+    {
+        [JsonProperty("key_id")] public string KeyId { get; set; } = "";
+        [JsonProperty("name")] public string Name { get; set; } = "";
+        [JsonProperty("scopes")] public List<string> Scopes { get; set; } = new List<string>();
+        [JsonProperty("created_at")] public string CreatedAt { get; set; } = "";
+    }
+
+    public sealed class Agent
+    {
+        [JsonProperty("slug")] public string Slug { get; set; } = "";
+        [JsonProperty("agent_id")] public string AgentId { get; set; } = "";
+        [JsonProperty("agent_version")] public int AgentVersion { get; set; }
+        /// <summary>Per-session hard cap, whole US cents as a string ("500" = $5.00).</summary>
+        [JsonProperty("max_list_cost_cents")] public string MaxListCostCents { get; set; } = "";
+        [JsonProperty("effort")] public string Effort { get; set; } = "";
+        [JsonProperty("default_environment")] public string DefaultEnvironment { get; set; } = "";
+        [JsonProperty("synced_at")] public string SyncedAt { get; set; } = "";
+    }
+
+    public sealed class Rig
+    {
+        [JsonProperty("configured")] public bool Configured { get; set; }
+        [JsonProperty("online")] public bool Online { get; set; }
+        [JsonProperty("models")] public List<string> Models { get; set; } = new List<string>();
+        [JsonProperty("reason")] public string? Reason { get; set; }
+    }
+
+    public sealed class CreateSessionRequest
+    {
+        [JsonProperty("agent_slug")] public string AgentSlug { get; set; } = "";
+        [JsonProperty("task")] public string Task { get; set; } = "";
+        [JsonProperty("environment", NullValueHandling = NullValueHandling.Ignore)] public string? Environment { get; set; }
+        [JsonProperty("repositories", NullValueHandling = NullValueHandling.Ignore)] public List<string>? Repositories { get; set; }
+    }
+
+    public sealed class CreatedSession
+    {
+        [JsonProperty("session_id")] public string SessionId { get; set; } = "";
+        [JsonProperty("status")] public string Status { get; set; } = "";
+        [JsonProperty("agent_slug")] public string AgentSlug { get; set; } = "";
+        [JsonProperty("agent_id")] public string AgentId { get; set; } = "";
+        [JsonProperty("agent_version")] public int AgentVersion { get; set; }
+        [JsonProperty("environment")] public string Environment { get; set; } = "";
+        [JsonProperty("environment_id")] public string EnvironmentId { get; set; } = "";
+        [JsonProperty("budget")] public Budget Budget { get; set; } = new Budget();
+        [JsonProperty("console_url")] public string ConsoleUrl { get; set; } = "";
+    }
+
+    public sealed class Budget
+    {
+        [JsonProperty("max_list_cost_cents")] public string MaxListCostCents { get; set; } = "";
+    }
+
+    /// <summary>Anthropic's list envelope.</summary>
+    public sealed class Page<T>
+    {
+        [JsonProperty("data")] public List<T> Data { get; set; } = new List<T>();
+        [JsonProperty("next_page")] public string? NextPage { get; set; }
+        [JsonProperty("prev_page")] public string? PrevPage { get; set; }
+    }
+
+    public sealed class AgentUsage
+    {
+        [JsonProperty("agent_slug")] public string AgentSlug { get; set; } = "";
+        [JsonProperty("session_count")] public long SessionCount { get; set; }
+        [JsonProperty("total_list_cost_cents")] public long TotalListCostCents { get; set; }
+        [JsonProperty("budget_reached_count")] public long BudgetReachedCount { get; set; }
+    }
+
+    public sealed class SessionUsage
+    {
+        [JsonProperty("session_id")] public string SessionId { get; set; } = "";
+        [JsonProperty("agent_slug")] public string AgentSlug { get; set; } = "";
+        [JsonProperty("environment_slug")] public string? EnvironmentSlug { get; set; }
+        [JsonProperty("list_cost_cents")] public string? ListCostCents { get; set; }
+        [JsonProperty("input_tokens")] public long? InputTokens { get; set; }
+        [JsonProperty("output_tokens")] public long? OutputTokens { get; set; }
+        [JsonProperty("active_seconds")] public double? ActiveSeconds { get; set; }
+        [JsonProperty("budget_reached")] public bool BudgetReached { get; set; }
+        [JsonProperty("last_event_type")] public string LastEventType { get; set; } = "";
+        [JsonProperty("observed_at")] public string ObservedAt { get; set; } = "";
+        /// <summary>"type: message" when the last turn died on a session.error.</summary>
+        [JsonProperty("last_error")] public string? LastError { get; set; }
+    }
+
+    public sealed class UsageWindow
+    {
+        [JsonProperty("since")] public string? Since { get; set; }
+        [JsonProperty("until")] public string? Until { get; set; }
+    }
+
+    public sealed class Usage
+    {
+        [JsonProperty("window")] public UsageWindow Window { get; set; } = new UsageWindow();
+        [JsonProperty("by_agent")] public List<AgentUsage> ByAgent { get; set; } = new List<AgentUsage>();
+        [JsonProperty("recent")] public List<SessionUsage> Recent { get; set; } = new List<SessionUsage>();
+    }
+
+    /// <summary>Helpers over Anthropic's event objects.</summary>
+    public static class Events
+    {
+        public static string Type(JObject ev) => ev.Value<string>("type") ?? "";
+        public static string Id(JObject ev) => ev.Value<string>("id") ?? "";
+
+        /// <summary>The concatenated text blocks of an agent.message / user.message; "" otherwise.</summary>
+        public static string Text(JObject ev)
+        {
+            if (!(ev["content"] is JArray blocks)) return "";
+            var sb = new System.Text.StringBuilder();
+            foreach (var b in blocks)
+            {
+                var t = b.Value<string>("text");
+                if (t != null) sb.Append(t);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>stop_reason.type of a session.status_idle, e.g. "end_turn"; null otherwise.</summary>
+        public static string? StopReason(JObject ev) => ev["stop_reason"]?.Value<string>("type");
+
+        /// <summary>"type: message" of a session.error; null otherwise.</summary>
+        public static string? Error(JObject ev)
+        {
+            var e = ev["error"];
+            if (e == null) return null;
+            return $"{e.Value<string>("type")}: {e.Value<string>("message")}";
+        }
+    }
+}

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="OpusSystems.Api.Tests/OpusSystems.Api.Tests.csproj" />
+  <Project Path="OpusSystems.Api/OpusSystems.Api.csproj" />
+</Solution>

@@ -74,7 +74,12 @@ impl Error {
             // The control plane's kinds, in our vocabulary. Anything it
             // reports about *itself* (database, config, Anthropic transport)
             // is an `upstream` failure from the client's point of view.
-            Error::Upstream { kind, status, .. } => match kind.as_str() {
+            Error::Upstream {
+                kind,
+                status,
+                message,
+                ..
+            } => match kind.as_str() {
                 "rig_offline" => "rig_offline",
                 "invalid_request" => "invalid_request",
                 "unknown_agent" | "unknown_environment" => "not_found",
@@ -82,7 +87,17 @@ impl Error {
                 // Ollama's own 4xx (unknown model, bad body) passes through
                 // the control plane as `inference`; it is the caller's.
                 "inference" if (400..500).contains(status) => "invalid_request",
-                "upstream" if *status == 404 => "not_found",
+                // Anthropic's own errors arrive as `upstream` with the
+                // message `<anthropic type>: <text>` (the control plane
+                // renders any non-404 of them as 502). The caller-side ones
+                // are the caller's: a malformed session id is a 400, not a
+                // gateway failure.
+                "upstream" => match anthropic_kind(message) {
+                    Some("invalid_request_error") => "invalid_request",
+                    Some("not_found_error") => "not_found",
+                    _ if *status == 404 => "not_found",
+                    _ => "upstream",
+                },
                 _ => "upstream",
             },
             Error::UpstreamTransport(_) => "upstream",
@@ -101,10 +116,12 @@ impl Error {
             // client-side kinds (400/404/409/503); the rest is our gateway's
             // failure to get an answer — including 401, which means *our*
             // token is wrong, not the caller's.
-            Error::Upstream { status, .. } => match *status {
-                400 | 404 | 409 | 503 => {
-                    StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
-                }
+            Error::Upstream { status, .. } => match (self.kind(), *status) {
+                ("invalid_request", _) => StatusCode::BAD_REQUEST,
+                ("not_found", _) => StatusCode::NOT_FOUND,
+                ("conflict", _) => StatusCode::CONFLICT,
+                ("rig_offline", _) => StatusCode::SERVICE_UNAVAILABLE,
+                (_, 503) => StatusCode::SERVICE_UNAVAILABLE,
                 _ => StatusCode::BAD_GATEWAY,
             },
             Error::UpstreamTransport(_) => StatusCode::BAD_GATEWAY,
@@ -160,6 +177,14 @@ impl IntoResponse for Error {
         res.extensions_mut().insert(self.envelope());
         res
     }
+}
+
+/// The Anthropic error type at the front of a control-plane `upstream`
+/// message (`"invalid_request_error: Invalid session ID: …"`), if any.
+fn anthropic_kind(message: &str) -> Option<&str> {
+    let (head, _) = message.split_once(": ")?;
+    (head.ends_with("_error") && head.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        .then_some(head)
 }
 
 /// Envelope for a response axum produced on its own (extractor rejections,

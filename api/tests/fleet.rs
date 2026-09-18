@@ -236,6 +236,34 @@ async fn upstream_errors_map_to_our_vocabulary() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_envelope(&json, "not_found");
 
+    // Anthropic's own 400 (rendered 502 by the control plane) → invalid_request 400
+    let (status, _, json) = call(
+        &h,
+        Method::GET,
+        "/v1/sessions/sesn_malformed",
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_envelope(&json, "invalid_request");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid session ID"));
+
+    // A genuine upstream failure stays 502 upstream
+    let (status, _, json) = call(
+        &h,
+        Method::GET,
+        "/v1/sessions/sesn_outage",
+        Some(&key),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_envelope(&json, "upstream");
+
     // invalid_request 400 → invalid_request 400
     let (status, _, json) = call(&h, Method::GET, "/v1/usage?since=bad", Some(&key), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -356,8 +384,16 @@ async fn inference_models_chat_embeddings_and_rig_offline() {
         Some(json!({"model": "missing", "messages": [], "stream": false})),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "type and status agree: {json}"
+    );
     assert_envelope(&json, "invalid_request");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("missing"));
 
     let (status, _, json) = call(
         &h,
