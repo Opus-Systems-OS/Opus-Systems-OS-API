@@ -38,12 +38,15 @@ public class LiveTests
     }
 
     [Fact]
-    public async Task ForbiddenAndNotFoundAreTypedExceptions()
+    public async Task ErrorsAreTypedExceptions()
     {
         using var api = Client();
         if (api == null) return;
+        // Anthropic validates the id's *format*, so a made-up id is
+        // invalid_request (400), not not_found.
         var ex = await Assert.ThrowsAsync<OpusApiException>(() => api.GetSessionAsync("sesn_doesnotexist"));
-        Assert.Equal("not_found", ex.Type);
+        Assert.Equal("invalid_request", ex.Type);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, ex.Status);
         Assert.StartsWith("req_", ex.RequestId);
     }
 
