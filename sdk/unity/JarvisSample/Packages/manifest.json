@@ -39,6 +39,7 @@
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0",
     "com.unity.nuget.newtonsoft-json": "3.2.1",
-    "com.unity.test-framework": "1.5.1"
+    "com.unity.test-framework": "1.5.1",
+    "com.opussystems.api": "https://github.com/Opus-Systems-OS/Opus-Systems-OS-API.git?path=/sdk/upm/com.opussystems.api"
   }
 }

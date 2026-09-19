@@ -5,9 +5,9 @@ box, a Send button, and the reply streaming in over the session WebSocket.
 It runs in Play mode in the editor with no headset. The Quest app grows from
 here: swap the IMGUI for a world-space panel and the text box for speech.
 
-- `Assets/OpusSystems/Api/` — a **copy** of `sdk/csharp/OpusSystems.Api`
-  (Unity does not follow symlinks). `sync-sdk.sh` refreshes it; CI runs
-  `sync-sdk.sh --check` so it cannot drift.
+- The SDK comes in as the UPM package `com.opussystems.api` (git URL in
+  `Packages/manifest.json`, source in `sdk/upm/com.opussystems.api` — a
+  copy of `sdk/csharp` kept current by `sync-sdk.sh`; CI checks it).
 - `Assets/Sample/JarvisConsole.cs` — the client. One rule for the SDK in
   Unity: callbacks arrive on background threads, so queue them and apply in
   `Update()`.

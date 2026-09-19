@@ -1,5 +1,13 @@
 {
   "dependencies": {
+    "com.opussystems.api": {
+      "version": "file:../../../upm/com.opussystems.api",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {
+        "com.unity.nuget.newtonsoft-json": "3.2.1"
+      }
+    },
     "com.unity.ext.nunit": {
       "version": "2.1.0",
       "depth": 1,

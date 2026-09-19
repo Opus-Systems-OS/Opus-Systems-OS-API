@@ -70,7 +70,8 @@ api/Dockerfile           two-stage, same shape as Iron-Fleet's
 deploy/env.example       variables; on the droplet they live in Iron-Fleet's deploy/droplet/.env
 docs/api-design.md       the contract in prose: envelope, scopes, versioning, WS protocol
 sdk/csharp/              OpusSystems.Api: the C# client (netstandard2.1, Newtonsoft only)
-sdk/unity/               JarvisSample: Unity 6 project on the SDK; sync-sdk.sh keeps its copy current
+sdk/upm/com.opussystems.api/  the SDK as a Unity package (git-URL dependency); sync-sdk.sh keeps it current
+sdk/unity/               JarvisSample: Unity 6 project on that package
 ```
 
 Deployment config (compose service, Caddy host) lives in
