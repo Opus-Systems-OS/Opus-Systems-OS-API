@@ -33,9 +33,14 @@ it over the compose network.
   revocable. `keys:admin` is minted only by `opus-api keys create` on the
   host — never over HTTP.
 - **Scopes:** `fleet:read`, `sessions:read`, `sessions:write`, `usage:read`,
-  `inference`, `voice`, `keys:admin`. A device key never gets `keys:admin`.
+  `inference`, `voice`, `ops:read`, `keys:admin`. A device key never gets
+  `keys:admin`.
 - **Jarvis's voice is server config.** `/v1/voice/speak` proxies Fish Audio
   with the key and the voice id on the droplet; clients cannot pick a voice.
+- **Service tokens stay on the server.** `/v1/ops*` turns one read token per
+  service (GitHub, UptimeRobot, DigitalOcean, Docker socket, Tailscale,
+  Cloudflare) into status rows; a token is never returned, and a service
+  that fails is a `down` row, never a failed hub.
 - **No budget or fleet mutation, ever.** No route creates agents or
   environments or raises a cap. Same rule as `mcp-fleet`. A client may add
   *session-local* custom tools and a system suffix to the session it

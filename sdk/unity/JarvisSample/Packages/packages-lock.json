@@ -1,12 +1,13 @@
 {
   "dependencies": {
     "com.opussystems.api": {
-      "version": "file:../../../upm/com.opussystems.api",
+      "version": "https://github.com/Opus-Systems-OS/Opus-Systems-OS-API.git?path=/sdk/upm/com.opussystems.api",
       "depth": 0,
-      "source": "local",
+      "source": "git",
       "dependencies": {
         "com.unity.nuget.newtonsoft-json": "3.2.1"
-      }
+      },
+      "hash": "f0c21fc1fc7ec5190669abc4d9af2c3f32a0a3af"
     },
     "com.unity.ext.nunit": {
       "version": "2.1.0",

@@ -49,6 +49,8 @@ namespace OpusSystems.Api
         [JsonProperty("tools", NullValueHandling = NullValueHandling.Ignore)] public List<CustomTool>? Tools { get; set; }
         /// <summary>Appended to the agent's system prompt for this session only (persona, device context). ≤ 4000 chars.</summary>
         [JsonProperty("system_suffix", NullValueHandling = NullValueHandling.Ignore)] public string? SystemSuffix { get; set; }
+        /// <summary>Which client started it (`quest`, `mac`, `tauri`) — kept as session metadata `iron_fleet_client` so another device can find the session.</summary>
+        [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public string? Client { get; set; }
     }
 
     /// <summary>A client-executed tool. Name is [a-z0-9_]{1,64}; InputSchema is a JSON Schema object.</summary>
