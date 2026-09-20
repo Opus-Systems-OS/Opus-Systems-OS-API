@@ -39,6 +39,7 @@ failures — no header, malformed, unknown id, wrong secret, revoked — answer
 | `inference` | `/v1/inference/*` |
 | `voice` | `/v1/voice/*` — Jarvis's voice (text to speech) |
 | `ops:read` | `/v1/ops*` — the stack's services at a glance, read-only |
+| `pair:approve` | `POST /v1/pair/{code}/approve` — approve a new device (held by the Mac, never a device) |
 | `keys:admin` | `/v1/keys*` |
 
 Suggested grants: desktop apps — everything but `keys:admin`; a headset —
@@ -113,6 +114,9 @@ Stage 2 (live):
 | `POST /v1/voice/speak` | `voice` | `{text (1–2000), format?: mp3|wav|pcm|opus, latency?: low|normal|balanced}` → audio bytes, streamed |
 | `GET /v1/voice` | `voice` | `{configured, voice_id, model}` |
 | `GET /v1/ops` | `ops:read` | `{services: [{id, name, state, headline, checked_at}]}` — the configured services, hub order |
+| `POST /v1/pair` | none | Start pairing a device: `{code, token, expires_in}` (10 min; 10 starts/min per address) |
+| `GET /v1/pair/{code}?token=` | none | `202` until approved; then `{api_key, key_id, name, wit_token?, speaker?}` once |
+| `POST /v1/pair/{code}/approve` | `pair:approve` | `{name, wit_token?, speaker?}` → mints the device key (fixed profile), revokes older keys of that name |
 | `GET /v1/ops/{service}` | `ops:read` | The same row with `detail` — `github`, `uptimerobot`, `droplet`, `docker`, `tailscale`, `cloudflare` |
 
 ### Voice
@@ -126,6 +130,21 @@ desktop app, a headset. The routes exist only when the key is configured
 `502 upstream` with a plain message (rejected key, exhausted credits) or
 `503` with `Retry-After` when the provider is overloaded. Fish Audio bills
 per character; the per-key rate limit bounds a runaway client.
+
+### Pairing
+
+A new device never has a key typed into it. It calls `POST /v1/pair` (no
+key), shows the six-digit `code` on screen and keeps the `token`. A human
+types the code into a client that holds `pair:approve` (the Mac's Jarvis
+app), which calls `approve` with the device's name and whatever extras the
+device needs — the Wit.ai token for dictation, the Mac's `host:port` for
+music. Approval mints a key with the **fixed device profile**
+(`fleet:read, sessions:read, sessions:write, voice, ops:read` — the body
+cannot ask for scopes, and `keys:admin` is unreachable this way), revokes
+any older key of the same name (so re-pairing rotates), and parks the
+bundle under the code. The device polls `GET /v1/pair/{code}?token=…` and
+collects it exactly once; a code without its token collects nothing.
+Codes live ten minutes in memory.
 
 ### Ops
 

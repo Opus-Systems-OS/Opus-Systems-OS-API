@@ -44,6 +44,7 @@ pub struct ErrorDetail {
         (name = "usage", description = "Spend rollups and the CSV audit trail (usage:read)"),
         (name = "inference", description = "Local models on the rig (inference)"),
         (name = "voice", description = "Jarvis's voice — text to speech (voice)"),
+        (name = "pair", description = "Pairing a new device: it shows a code, a client with pair:approve approves it, the device collects its key"),
         (name = "ops", description = "The stack's services at a glance — GitHub, UptimeRobot, the droplet, Docker, Tailscale, Cloudflare (ops:read)"),
     )
 )]

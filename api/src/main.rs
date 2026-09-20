@@ -102,6 +102,7 @@ async fn run() -> error::Result<()> {
             limiter,
             voice: std::sync::Arc::new(voice),
             ops: std::sync::Arc::new(ops),
+            pairings: Default::default(),
         },
         &cfg.allowed_origins,
     );

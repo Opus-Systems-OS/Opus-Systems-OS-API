@@ -162,6 +162,29 @@ namespace OpusSystems.Api
         /// <summary>Which voice the API speaks with; throws not_found when voice is not configured.</summary>
         public Task<VoiceInfo> VoiceInfoAsync(CancellationToken ct = default) => GetAsync<VoiceInfo>("voice", ct);
 
+        // ---- pairing (no key) ----------------------------------------------
+
+        /// <summary>Start pairing this device: show <c>code</c>, keep <c>token</c>. Works with an empty key.</summary>
+        public async Task<JObject> PairStartAsync(CancellationToken ct = default)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(BaseUrl, "pair"));
+            using var res = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            var text = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode) throw Envelope(res, text);
+            return JObject.Parse(text);
+        }
+
+        /// <summary>Poll a pairing: null while pending; the bundle {api_key, key_id, name, wit_token?, speaker?} once approved.</summary>
+        public async Task<JObject?> PairPollAsync(string code, string token, CancellationToken ct = default)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, new Uri(BaseUrl, "pair/" + Uri.EscapeDataString(code) + "?token=" + Uri.EscapeDataString(token)));
+            using var res = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            if ((int)res.StatusCode == 202) return null;
+            var text = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!res.IsSuccessStatusCode) throw Envelope(res, text);
+            return JObject.Parse(text);
+        }
+
         // ---- ops (ops:read) ------------------------------------------------
 
         /// <summary>The stack's services at a glance: <c>{services:[{id,name,state,headline,checked_at}]}</c>.</summary>

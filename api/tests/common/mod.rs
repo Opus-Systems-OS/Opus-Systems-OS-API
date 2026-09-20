@@ -196,6 +196,7 @@ pub async fn harness_with(opts: Options) -> Harness {
             limiter: Arc::new(RateLimiter::new(opts.rate_limit_per_minute)),
             voice: Arc::new(voice),
             ops: Arc::new(ops),
+            pairings: Default::default(),
         },
         &opts.allowed_origins,
     );
