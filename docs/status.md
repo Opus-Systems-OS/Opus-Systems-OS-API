@@ -126,6 +126,26 @@ Parked: iOS build/signing (`Sources/Shared` compiles for it), the
 Windows Python port (rig backlog), images (revisit if Managed Agents
 documents image blocks for `user.message`).
 
+## Voice — done 2026-09-19
+
+`POST /v1/voice/speak` (scope `voice`) proxies Fish Audio with the key and
+reference voice on the droplet; every client (Tauri, Swift, Quest) speaks
+with it. Fish bills per character against the user's API credit.
+
+## Ops — done 2026-09-20 ~01:10 UTC (#14, Iron-Fleet #36)
+
+`GET /v1/ops` and `/v1/ops/{service}` (scope `ops:read`): GitHub,
+UptimeRobot, the droplet (DigitalOcean), Docker (engine socket, `:ro` in
+compose), Tailscale, Cloudflare — one read token each in the droplet
+`.env`, 30 s cache, failures as `down` rows. Live on first deploy: six
+rows, five `ok`, Tailscale `warn` (the rig is off); the DO metrics agent
+is on, so the droplet row carries load and memory. `CreateSession.client`
+→ metadata `iron_fleet_client` (for the Mac answering the headset's
+music tools). Keys re-minted with `ops:read`: `mac` `7d26eb91`, `quest-3`
+`9c44f721` (old `quest-3` `89d4f0f9` to revoke once the headset is
+confirmed on the new one). The GitHub token is a classic `ghp_` — swap
+for a fine-grained read-only one when convenient.
+
 ## What's next
 
 The API's build order is complete except the Windows half of stage 4
