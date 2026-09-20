@@ -11,6 +11,7 @@ pub mod inference;
 pub mod keys;
 pub mod me;
 pub mod ops;
+pub mod pair;
 pub mod rig;
 pub mod sessions;
 pub mod usage;
@@ -43,6 +44,8 @@ pub struct AppState {
     /// `Some` when at least one service token is set; otherwise `/v1/ops*`
     /// is not registered at all.
     pub ops: Arc<Option<Ops>>,
+    /// Pending device pairings (in memory, ten-minute codes).
+    pub pairings: pair::Pairings,
 }
 
 /// A sub-router whose every route needs `scope`.
@@ -75,10 +78,14 @@ pub fn router(state: AppState) -> Router {
     if state.ops.is_some() {
         protected = protected.merge(scoped(Scope::OpsRead, ops::router()));
     }
+    protected = protected.merge(scoped(Scope::PairApprove, pair::approve_router()));
     let protected = protected.route_layer(from_fn_with_state(auth, authenticate));
 
     let (router, api) = OpenApiRouter::with_openapi(crate::openapi::Doc::openapi())
         .merge(health::router())
+        // Pairing's start and claim are the only routes without a key: a
+        // device that has none yet is the whole point.
+        .merge(pair::open_router())
         .merge(protected)
         .split_for_parts();
 

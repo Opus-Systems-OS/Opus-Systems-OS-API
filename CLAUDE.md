@@ -33,8 +33,9 @@ it over the compose network.
   revocable. `keys:admin` is minted only by `opus-api keys create` on the
   host — never over HTTP.
 - **Scopes:** `fleet:read`, `sessions:read`, `sessions:write`, `usage:read`,
-  `inference`, `voice`, `ops:read`, `keys:admin`. A device key never gets
-  `keys:admin`.
+  `inference`, `voice`, `ops:read`, `pair:approve`, `keys:admin`. A device
+  key never gets `keys:admin` or `pair:approve`; a paired device gets
+  exactly the fixed profile in `v1/pair.rs`.
 - **Jarvis's voice is server config.** `/v1/voice/speak` proxies Fish Audio
   with the key and the voice id on the droplet; clients cannot pick a voice.
 - **Service tokens stay on the server.** `/v1/ops*` turns one read token per
