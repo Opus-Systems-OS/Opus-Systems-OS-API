@@ -48,19 +48,23 @@ pub enum Scope {
     /// `/v1/voice/*` — Jarvis's voice (text to speech).
     #[serde(rename = "voice")]
     Voice,
+    /// `/v1/ops*` — read-only status of the stack's services.
+    #[serde(rename = "ops:read")]
+    OpsRead,
     /// Manage keys. Never granted to a device.
     #[serde(rename = "keys:admin")]
     KeysAdmin,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 7] = [
+    pub const ALL: [Scope; 8] = [
         Scope::FleetRead,
         Scope::SessionsRead,
         Scope::SessionsWrite,
         Scope::UsageRead,
         Scope::Inference,
         Scope::Voice,
+        Scope::OpsRead,
         Scope::KeysAdmin,
     ];
 
@@ -72,6 +76,7 @@ impl Scope {
             Scope::UsageRead => "usage:read",
             Scope::Inference => "inference",
             Scope::Voice => "voice",
+            Scope::OpsRead => "ops:read",
             Scope::KeysAdmin => "keys:admin",
         }
     }

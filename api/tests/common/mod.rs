@@ -14,10 +14,11 @@ use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use opus_api::auth::keys::Scope;
 use opus_api::auth::rate_limit::RateLimiter;
-use opus_api::config::VoiceConfig;
+use opus_api::config::{OpsConfig, VoiceConfig};
 use opus_api::db::Db;
 use opus_api::upstream::control_plane::ControlPlane;
 use opus_api::upstream::fish_audio::FishAudio;
+use opus_api::upstream::ops::{BaseUrls, Ops};
 use opus_api::v1::keys::create_key;
 use opus_api::v1::AppState;
 use serde_json::{json, Value};
@@ -27,6 +28,7 @@ use tower::ServiceExt;
 
 pub const CP_TOKEN: &str = "cp-secret";
 pub const FISH_KEY: &str = "sk-fish-test";
+pub const OPS_TOKEN: &str = "ops-read-token";
 
 /// What the stub saw, for assertions about what reached upstream.
 #[derive(Default)]
@@ -51,6 +53,11 @@ pub struct Options {
     pub allowed_origins: Vec<String>,
     /// Register `/v1/voice/*` against a stub Fish Audio.
     pub voice: bool,
+    /// Register `/v1/ops*` against one stub that plays every service (and
+    /// a unix-socket Docker stub). Off = the routes don't exist.
+    pub ops: bool,
+    /// With `ops`: make the GitHub stub answer 401, to see a `down` row.
+    pub github_rejects: bool,
 }
 
 pub struct Harness {
@@ -138,6 +145,48 @@ pub async fn harness_with(opts: Options) -> Harness {
     } else {
         None
     };
+    let ops = if opts.ops {
+        let ol = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ops_addr = ol.local_addr().unwrap();
+        let ops_seen = seen.clone();
+        let rejects = opts.github_rejects;
+        tokio::spawn(async move {
+            axum::serve(ol, ops_router(ops_seen, rejects))
+                .await
+                .unwrap();
+        });
+        let sock = std::env::temp_dir().join(format!("opus-api-test-{}.sock", getrandom_u64()));
+        let _ = std::fs::remove_file(&sock);
+        let ul = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            axum::serve(ul, docker_router()).await.unwrap();
+        });
+        let base = format!("http://{ops_addr}");
+        Some(
+            Ops::with_base_urls(
+                OpsConfig {
+                    uptimerobot_api_key: Some(OPS_TOKEN.into()),
+                    tailscale_api_key: Some(OPS_TOKEN.into()),
+                    tailscale_tailnet: "-".into(),
+                    cloudflare_api_token: Some(OPS_TOKEN.into()),
+                    digitalocean_token: Some(OPS_TOKEN.into()),
+                    github_token: Some(OPS_TOKEN.into()),
+                    github_org: "Opus-Systems-OS".into(),
+                    docker_socket: Some(sock),
+                },
+                BaseUrls {
+                    uptimerobot: base.clone(),
+                    tailscale: base.clone(),
+                    cloudflare: base.clone(),
+                    digitalocean: base.clone(),
+                    github: base,
+                },
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
     let db = Db::in_memory().unwrap();
     let control_plane = ControlPlane::new(&format!("http://{cp_addr}"), CP_TOKEN).unwrap();
     let app = opus_api::app(
@@ -146,6 +195,7 @@ pub async fn harness_with(opts: Options) -> Harness {
             control_plane,
             limiter: Arc::new(RateLimiter::new(opts.rate_limit_per_minute)),
             voice: Arc::new(voice),
+            ops: Arc::new(ops),
         },
         &opts.allowed_origins,
     );
@@ -470,6 +520,171 @@ async fn chat(headers: HeaderMap, Json(body): Json<Value>) -> Response {
 
 async fn embeddings(Json(body): Json<Value>) -> Json<Value> {
     Json(json!({"model": body["model"], "embeddings": [[0.1, 0.2, 0.3]]}))
+}
+
+fn getrandom_u64() -> u64 {
+    let mut b = [0u8; 8];
+    getrandom::fill(&mut b).unwrap();
+    u64::from_le_bytes(b)
+}
+
+// ---- the stub services behind /v1/ops -----------------------------------
+
+#[derive(Clone)]
+struct OpsStub {
+    seen: Arc<Mutex<Seen>>,
+    github_rejects: bool,
+}
+
+fn ops_router(seen: Arc<Mutex<Seen>>, github_rejects: bool) -> Router {
+    Router::new()
+        .route("/v2/getMonitors", post(ur_monitors))
+        .route("/api/v2/tailnet/{tailnet}/devices", get(ts_devices))
+        .route("/client/v4/zones", get(cf_zones))
+        .route("/client/v4/zones/{id}/dns_records", get(cf_records))
+        .route("/v2/droplets", get(do_droplets))
+        .route("/v2/monitoring/metrics/droplet/{metric}", get(do_metric))
+        .route("/orgs/{org}/repos", get(gh_repos))
+        .route("/repos/{owner}/{repo}/pulls", get(gh_pulls))
+        .route("/repos/{owner}/{repo}/actions/runs", get(gh_runs))
+        .route("/notifications", get(gh_notifications))
+        .layer(axum::middleware::from_fn_with_state(seen, record_ops))
+        .with_state(OpsStub {
+            seen: Arc::new(Mutex::new(Seen::default())),
+            github_rejects,
+        })
+}
+
+async fn record_ops(
+    State(seen): State<Arc<Mutex<Seen>>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.to_string())
+        .unwrap_or_default();
+    let bearer_ok = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == format!("Bearer {OPS_TOKEN}"))
+        .unwrap_or(false);
+    seen.lock().unwrap().requests.push((
+        format!("ops {}", req.method()),
+        format!("{path} bearer_ok={bearer_ok}"),
+        None,
+    ));
+    next.run(req).await
+}
+
+async fn ur_monitors(body: String) -> Json<Value> {
+    if !body.contains(&format!("api_key={OPS_TOKEN}")) {
+        return Json(
+            json!({"stat":"fail","error":{"type":"invalid_parameter","message":"api_key is invalid"}}),
+        );
+    }
+    Json(json!({"stat":"ok","monitors":[
+        {"friendly_name":"api.opustower.dev","url":"https://api.opustower.dev/v1/health","status":2,"custom_uptime_ratio":"100.000-99.987-99.900","response_times":[{"datetime":1,"value":212}]},
+        {"friendly_name":"fleet.opustower.dev","url":"https://fleet.opustower.dev/healthz","status":2,"custom_uptime_ratio":"100.000-100.000-100.000","response_times":[{"datetime":1,"value":180}]}
+    ]}))
+}
+
+async fn ts_devices() -> Json<Value> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    Json(json!({"devices":[
+        {"name":"opus.tail1234.ts.net","hostname":"opus","os":"windows","addresses":["100.79.233.8"],"lastSeen":"2026-09-01T00:00:00Z","updateAvailable":false},
+        {"name":"opustower.tail1234.ts.net","hostname":"opustower","os":"linux","addresses":["100.108.133.31"],"lastSeen":now,"updateAvailable":true}
+    ]}))
+}
+
+async fn cf_zones() -> Json<Value> {
+    Json(
+        json!({"result":[{"id":"z1","name":"opustower.dev","status":"active","paused":false}],"success":true}),
+    )
+}
+
+async fn cf_records(Path(id): Path<String>) -> Json<Value> {
+    assert_eq!(id, "z1");
+    Json(json!({"result":[
+        {"type":"A","name":"api.opustower.dev","content":"198.199.66.109","proxied":true,"ttl":1},
+        {"type":"A","name":"fleet.opustower.dev","content":"198.199.66.109","proxied":true,"ttl":1},
+        {"type":"AAAA","name":"mcp.opustower.dev","content":"2604:a880:400:d1:0:4:f807:7001","proxied":false,"ttl":300}
+    ],"success":true}))
+}
+
+async fn do_droplets() -> Json<Value> {
+    Json(
+        json!({"droplets":[{"id":4242,"name":"opustower","status":"active","region":{"slug":"nyc1"},"vcpus":1,"memory":1024,"disk":25,"created_at":"2026-09-14T00:00:00Z",
+        "networks":{"v4":[{"ip_address":"10.0.0.2","type":"private"},{"ip_address":"198.199.66.109","type":"public"}]}}]}),
+    )
+}
+
+async fn do_metric(Path(metric): Path<String>) -> Json<Value> {
+    let v = match metric.as_str() {
+        "load_1" => "0.12",
+        "memory_total" => "1024000000",
+        "memory_available" => "600000000",
+        _ => "0",
+    };
+    Json(json!({"status":"success","data":{"result":[{"metric":{},"values":[[1,"0"],[2,v]]}]}}))
+}
+
+async fn gh_repos(State(s): State<OpsStub>, Path(org): Path<String>) -> Response {
+    if s.github_rejects {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"message":"Bad credentials"})),
+        )
+            .into_response();
+    }
+    assert_eq!(org, "Opus-Systems-OS");
+    Json(json!([
+        {"name":"Iron-Fleet","full_name":"Opus-Systems-OS/Iron-Fleet","private":true,"pushed_at":"2026-09-19T20:00:00Z","default_branch":"main"},
+        {"name":"Opus-Systems-OS-API","full_name":"Opus-Systems-OS/Opus-Systems-OS-API","private":true,"pushed_at":"2026-09-19T19:00:00Z","default_branch":"main"}
+    ])).into_response()
+}
+
+async fn gh_pulls(Path((_, repo)): Path<(String, String)>) -> Json<Value> {
+    if repo == "Iron-Fleet" {
+        Json(
+            json!([{"number":36,"title":"control-plane: client label on sessions","user":{"login":"jameswalker"},"draft":false,"updated_at":"2026-09-19T20:00:00Z","html_url":"https://github.com/Opus-Systems-OS/Iron-Fleet/pull/36"}]),
+        )
+    } else {
+        Json(json!([]))
+    }
+}
+
+async fn gh_runs(Path((_, repo)): Path<(String, String)>) -> Json<Value> {
+    let conclusion = if repo == "Iron-Fleet" {
+        "failure"
+    } else {
+        "success"
+    };
+    Json(
+        json!({"workflow_runs":[{"name":"images","status":"completed","conclusion":conclusion,"head_branch":"main","updated_at":"2026-09-19T20:05:00Z","html_url":"https://github.com/x/y/actions/runs/1"}]}),
+    )
+}
+
+async fn gh_notifications() -> Json<Value> {
+    Json(
+        json!([{"subject":{"title":"control-plane: client label on sessions","type":"PullRequest"},"repository":{"full_name":"Opus-Systems-OS/Iron-Fleet"},"reason":"review_requested","updated_at":"2026-09-19T20:00:00Z"}]),
+    )
+}
+
+fn docker_router() -> Router {
+    Router::new().route("/containers/json", get(docker_containers))
+}
+
+async fn docker_containers() -> Json<Value> {
+    Json(json!([
+        {"Names":["/droplet-api-1"],"Image":"ghcr.io/opus-systems-os/opus-systems-os-api/api:latest","State":"running","Status":"Up 3 hours","Ports":[{"PrivatePort":8100,"Type":"tcp"}]},
+        {"Names":["/droplet-caddy-1"],"Image":"caddy:2","State":"running","Status":"Up 3 days","Ports":[{"PrivatePort":443,"PublicPort":443,"Type":"tcp"}]},
+        {"Names":["/droplet-old-1"],"Image":"x","State":"exited","Status":"Exited (0) 2 days ago","Ports":[]}
+    ]))
 }
 
 // ---- the stub Fish Audio ---------------------------------------------

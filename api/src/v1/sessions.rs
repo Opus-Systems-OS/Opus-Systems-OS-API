@@ -76,6 +76,12 @@ pub struct CreateSession {
     /// a blank line — a client's personality or device context. ≤ 4000 chars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_suffix: Option<String>,
+    /// Which client started the session — `quest`, `mac`, `tauri` — kept in
+    /// the session's metadata as `iron_fleet_client`, so another device can
+    /// find it (the Mac answers the headset's music tools this way).
+    /// `[a-z0-9-]`, ≤ 32 chars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
 }
 
 /// A client-executed tool. `input_schema` is a JSON Schema object.
@@ -202,6 +208,18 @@ pub async fn create(
         if sfx.chars().count() > 4_000 {
             return Err(Error::InvalidRequest(
                 "system_suffix is longer than 4000 characters".into(),
+            ));
+        }
+    }
+    if let Some(client) = &req.client {
+        if client.is_empty()
+            || client.len() > 32
+            || !client
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(Error::InvalidRequest(
+                "client must be 1-32 chars of [a-z0-9-]".into(),
             ));
         }
     }

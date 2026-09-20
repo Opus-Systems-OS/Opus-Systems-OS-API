@@ -87,12 +87,21 @@ async fn run() -> error::Result<()> {
             None
         }
     };
+    let ops = if cfg.ops.any() {
+        let ops = opus_api::upstream::ops::Ops::new(cfg.ops.clone())?;
+        tracing::info!(services = ?ops.configured(), "ops configured");
+        Some(ops)
+    } else {
+        tracing::info!("no service tokens — /v1/ops disabled");
+        None
+    };
     let app = opus_api::app(
         v1::AppState {
             db,
             control_plane,
             limiter,
             voice: std::sync::Arc::new(voice),
+            ops: std::sync::Arc::new(ops),
         },
         &cfg.allowed_origins,
     );

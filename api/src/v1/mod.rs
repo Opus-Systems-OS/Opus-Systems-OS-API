@@ -10,6 +10,7 @@ pub mod health;
 pub mod inference;
 pub mod keys;
 pub mod me;
+pub mod ops;
 pub mod rig;
 pub mod sessions;
 pub mod usage;
@@ -23,6 +24,7 @@ use crate::db::Db;
 use crate::error::Error;
 use crate::upstream::control_plane::ControlPlane;
 use crate::upstream::fish_audio::FishAudio;
+use crate::upstream::ops::Ops;
 use axum::middleware::from_fn_with_state;
 use axum::Router;
 use std::sync::Arc;
@@ -38,6 +40,9 @@ pub struct AppState {
     /// `Some` when `FISH_AUDIO_API_KEY` is set; otherwise `/v1/voice/*`
     /// is not registered at all.
     pub voice: Arc<Option<FishAudio>>,
+    /// `Some` when at least one service token is set; otherwise `/v1/ops*`
+    /// is not registered at all.
+    pub ops: Arc<Option<Ops>>,
 }
 
 /// A sub-router whose every route needs `scope`.
@@ -66,6 +71,9 @@ pub fn router(state: AppState) -> Router {
         .merge(ws::router());
     if state.voice.is_some() {
         protected = protected.merge(scoped(Scope::Voice, voice::router()));
+    }
+    if state.ops.is_some() {
+        protected = protected.merge(scoped(Scope::OpsRead, ops::router()));
     }
     let protected = protected.route_layer(from_fn_with_state(auth, authenticate));
 

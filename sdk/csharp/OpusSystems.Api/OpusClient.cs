@@ -162,6 +162,14 @@ namespace OpusSystems.Api
         /// <summary>Which voice the API speaks with; throws not_found when voice is not configured.</summary>
         public Task<VoiceInfo> VoiceInfoAsync(CancellationToken ct = default) => GetAsync<VoiceInfo>("voice", ct);
 
+        // ---- ops (ops:read) ------------------------------------------------
+
+        /// <summary>The stack's services at a glance: <c>{services:[{id,name,state,headline,checked_at}]}</c>.</summary>
+        public Task<JObject> OpsAsync(CancellationToken ct = default) => GetAsync<JObject>("ops", ct);
+
+        /// <summary>One service with its <c>detail</c> document: github, uptimerobot, droplet, docker, tailscale, cloudflare.</summary>
+        public Task<JObject> OpsAsync(string service, CancellationToken ct = default) => GetAsync<JObject>("ops/" + Uri.EscapeDataString(service), ct);
+
         // ---- plumbing ----------------------------------------------------
 
         private static string Id(string id)

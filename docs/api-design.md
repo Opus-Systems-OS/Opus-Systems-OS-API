@@ -38,11 +38,12 @@ failures — no header, malformed, unknown id, wrong secret, revoked — answer
 | `usage:read` | `GET /v1/usage`, `GET /v1/usage/export.csv` |
 | `inference` | `/v1/inference/*` |
 | `voice` | `/v1/voice/*` — Jarvis's voice (text to speech) |
+| `ops:read` | `/v1/ops*` — the stack's services at a glance, read-only |
 | `keys:admin` | `/v1/keys*` |
 
 Suggested grants: desktop apps — everything but `keys:admin`; a headset —
-`sessions:read`, `sessions:write`, `voice`, `inference`; the native Jarvis
-app — `sessions:read`, `sessions:write`, `voice`.
+`sessions:read`, `sessions:write`, `fleet:read`, `voice`, `ops:read`; the
+native Jarvis app — `sessions:read`, `sessions:write`, `voice`.
 
 There is no scope for creating agents or environments or changing budgets,
 because there are no such routes.
@@ -111,6 +112,8 @@ Stage 2 (live):
 | `POST /v1/inference/embeddings` | `inference` | Ollama `/api/embed` body |
 | `POST /v1/voice/speak` | `voice` | `{text (1–2000), format?: mp3|wav|pcm|opus, latency?: low|normal|balanced}` → audio bytes, streamed |
 | `GET /v1/voice` | `voice` | `{configured, voice_id, model}` |
+| `GET /v1/ops` | `ops:read` | `{services: [{id, name, state, headline, checked_at}]}` — the configured services, hub order |
+| `GET /v1/ops/{service}` | `ops:read` | The same row with `detail` — `github`, `uptimerobot`, `droplet`, `docker`, `tailscale`, `cloudflare` |
 
 ### Voice
 
@@ -123,6 +126,25 @@ desktop app, a headset. The routes exist only when the key is configured
 `502 upstream` with a plain message (rejected key, exhausted credits) or
 `503` with `Retry-After` when the provider is overloaded. Fish Audio bills
 per character; the per-key rate limit bounds a runaway client.
+
+### Ops
+
+The stack's own services, read-only, for a launcher panel: GitHub (the
+org's repos — open PRs, latest workflow run, unread notifications),
+UptimeRobot (monitors, uptime ratios, response time), the droplet
+(DigitalOcean — status, IPs, load and memory when the metrics agent is
+on), Docker on the droplet (containers, over the engine socket mounted
+read-only), Tailscale (devices, online by `lastSeen`), Cloudflare (zones and
+DNS records). Each is a row `{id, name, state: ok|warn|down|unknown,
+headline, checked_at}`; `/v1/ops/{service}` adds `detail`, a document whose
+shape is per service (see `upstream/ops/*.rs`). One read token per service
+lives on the server (`UPTIMEROBOT_API_KEY`, `TAILSCALE_API_KEY`,
+`CLOUDFLARE_API_TOKEN`, `DIGITALOCEAN_TOKEN`, `GITHUB_TOKEN`,
+`DOCKER_SOCKET`); a service without a token is simply not listed, and with
+none the routes don't exist. A service is polled at most every 30 s however
+many clients ask; one that rejects its token or cannot be reached is a
+`down` row carrying the reason — the hub itself never fails because one
+service did. Tokens are never returned, only what is derived from them.
 
 ### Client-executed tools
 

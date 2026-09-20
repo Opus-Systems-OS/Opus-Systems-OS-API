@@ -20,6 +20,37 @@ pub struct Config {
     pub rate_limit_per_minute: u32,
     /// Fish Audio, for `/v1/voice/*`. `None` = the routes don't exist.
     pub voice: Option<VoiceConfig>,
+    /// Read tokens for the stack's services, for `/v1/ops*`. Each is
+    /// optional; with none set the routes don't exist.
+    pub ops: OpsConfig,
+}
+
+/// One read-only credential per service the ops panels watch. The API
+/// never returns a token — only what it derives from it.
+#[derive(Debug, Clone, Default)]
+pub struct OpsConfig {
+    pub uptimerobot_api_key: Option<String>,
+    pub tailscale_api_key: Option<String>,
+    /// Tailscale tailnet name; `-` means the token's own tailnet.
+    pub tailscale_tailnet: String,
+    pub cloudflare_api_token: Option<String>,
+    pub digitalocean_token: Option<String>,
+    pub github_token: Option<String>,
+    /// The GitHub organisation whose repos are watched.
+    pub github_org: String,
+    /// Path of the Docker engine socket, mounted read-only into the container.
+    pub docker_socket: Option<PathBuf>,
+}
+
+impl OpsConfig {
+    pub fn any(&self) -> bool {
+        self.uptimerobot_api_key.is_some()
+            || self.tailscale_api_key.is_some()
+            || self.cloudflare_api_token.is_some()
+            || self.digitalocean_token.is_some()
+            || self.github_token.is_some()
+            || self.docker_socket.is_some()
+    }
 }
 
 /// Jarvis's voice is server configuration: clients ask for speech, never
@@ -94,6 +125,16 @@ impl Config {
                     .unwrap_or_else(|| DEFAULT_VOICE_ID.to_owned()),
                 model: optional("FISH_AUDIO_MODEL"),
             }),
+            ops: OpsConfig {
+                uptimerobot_api_key: optional("UPTIMEROBOT_API_KEY"),
+                tailscale_api_key: optional("TAILSCALE_API_KEY"),
+                tailscale_tailnet: optional("TAILSCALE_TAILNET").unwrap_or_else(|| "-".to_owned()),
+                cloudflare_api_token: optional("CLOUDFLARE_API_TOKEN"),
+                digitalocean_token: optional("DIGITALOCEAN_TOKEN"),
+                github_token: optional("GITHUB_TOKEN"),
+                github_org: optional("GITHUB_ORG").unwrap_or_else(|| "Opus-Systems-OS".to_owned()),
+                docker_socket: optional("DOCKER_SOCKET").map(PathBuf::from),
+            },
         })
     }
 }
