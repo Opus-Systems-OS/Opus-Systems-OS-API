@@ -31,10 +31,12 @@ namespace OpusSystems.Api
         public OpusClient(string baseUrl, string apiKey, HttpClient? http = null)
         {
             if (string.IsNullOrWhiteSpace(baseUrl)) throw new ArgumentException("baseUrl", nameof(baseUrl));
-            if (string.IsNullOrWhiteSpace(apiKey) || !apiKey.StartsWith("osk_", StringComparison.Ordinal))
-                throw new ArgumentException("apiKey must be an osk_… key", nameof(apiKey));
+            // An empty key is allowed for a device that has none yet: only the
+            // pairing calls work without one.
+            if (!string.IsNullOrEmpty(apiKey) && !apiKey.StartsWith("osk_", StringComparison.Ordinal))
+                throw new ArgumentException("apiKey must be an osk_… key, or empty until paired", nameof(apiKey));
             BaseUrl = new Uri(baseUrl.TrimEnd('/') + "/");
-            _key = apiKey;
+            _key = apiKey ?? "";
             _ownsHttp = http == null;
             _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             _http.DefaultRequestHeaders.UserAgent.ParseAdd("opus-systems-api-csharp/0.1.0");
@@ -219,6 +221,7 @@ namespace OpusSystems.Api
 
         private async Task<T> SendAsync<T>(HttpRequestMessage req, CancellationToken ct)
         {
+            if (_key.Length == 0) throw new OpusApiException(HttpStatusCode.Unauthorized, "unauthorized", "this client has no API key yet — pair first", "", null);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _key);
             using var res = await _http.SendAsync(req, ct).ConfigureAwait(false);
             var text = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
