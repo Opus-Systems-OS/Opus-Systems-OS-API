@@ -233,3 +233,41 @@ async fn session_client_label_is_forwarded_and_validated() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_envelope(&json, "invalid_request");
 }
+
+#[tokio::test]
+async fn session_model_is_forwarded_and_shape_checked() {
+    let h = harness().await;
+    let key = h.key("web", &[Scope::SessionsWrite]);
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions",
+        Some(&key),
+        Some(json!({"agent_slug":"jarvis","task":"hello","model":"claude-sonnet-5"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{json}");
+    let forwarded = h
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .find(|r| r.0 == "POST" && r.1 == "/sessions")
+        .and_then(|r| r.2.clone())
+        .unwrap();
+    assert_eq!(forwarded["model"], "claude-sonnet-5");
+
+    for bad in ["", "Claude Sonnet", "claude-sonnet-5; drop"] {
+        let (status, _, json) = call(
+            &h,
+            Method::POST,
+            "/v1/sessions",
+            Some(&key),
+            Some(json!({"agent_slug":"jarvis","task":"hello","model": bad})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_envelope(&json, "invalid_request");
+    }
+}
