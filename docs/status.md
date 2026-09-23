@@ -65,14 +65,25 @@ sent, live `event` frames through to `agent.message` ("17 times 23 is
 `api/examples/ws_drive.rs` is the reference client: what a headset does,
 minus the headset.
 
-## Stage 4 — Mac half done 2026-09-18 ~05:05 UTC
+## Stage 4 — done 2026-09-22 (Mac half 2026-09-18 ~05:05 UTC)
 
 The Tauri app talks to `https://api.opustower.dev/v1` with the `mac` key
 (Iron-Fleet PR #30; `/agents` → `/fleet/agents`, `/inference/models` →
 `/rig`). Caddy's `access-api.log` shows it polling `/v1/fleet/agents`,
-`/v1/rig`, `/v1/sessions` → 200. **Windows half + narrowing
-`fleet.opustower.dev` to the webhook are parked** in Iron-Fleet's plan
-("Rig backlog") until the user is at the rig.
+`/v1/rig`, `/v1/sessions` → 200.
+
+The Windows half followed at the rig on 2026-09-22 (Iron-Fleet #37 and the
+plan's "Rig backlog"): the rig got its own key, `win-rig` `28033876`
+(`fleet:read,sessions:read,sessions:write,usage:read,inference,voice,ops:read`),
+in `%APPDATA%\com.ironfleet.app\control-plane.json` with `url`
+`https://api.opustower.dev/v1`, and the Tauri app was rebuilt against it —
+`/v1/me` → `win-rig`, four agents, `/v1/rig` online with both models, and
+the app's 5 s poll at 200 in `access-api.log`. Caddy was then narrowed:
+`fleet.opustower.dev` serves `/webhooks/*` and `/healthz` and 404s
+everything else, so this API is the only front door and no laptop holds
+`CONTROL_PLANE_TOKEN` as a client credential. Verified from the rig —
+`/healthz` 200, `/agents` `/sessions` `/usage` 404, `GET` on the webhook
+route 405 and an unsigned `POST` 400 in the control plane's log.
 
 ## Stage 5a — C# SDK done 2026-09-18 ~14:30 UTC
 
@@ -148,8 +159,7 @@ for a fine-grained read-only one when convenient.
 
 ## What's next
 
-The API's build order is complete except the Windows half of stage 4
-(rig backlog). Open threads, none blocking:
+The API's build order is complete. Open threads, none blocking:
 
 - `GET /v1/fleet/environments` with queue stats (`workers_polling`,
   depth) — needs a control-plane route; verify the Managed Agents
