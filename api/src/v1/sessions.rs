@@ -82,6 +82,13 @@ pub struct CreateSession {
     /// `[a-z0-9-]`, ≤ 32 chars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
+    /// Run this session on another model instead of the agent's own, e.g.
+    /// `claude-sonnet-5`. The control plane holds the allowlist and answers
+    /// `invalid_request` for anything else. A model other than the agent's
+    /// runs at that model's default effort. The model is fixed for the
+    /// session's life, so switching models means a new session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// A client-executed tool. `input_schema` is a JSON Schema object.
@@ -223,12 +230,26 @@ pub async fn create(
             ));
         }
     }
+    if let Some(model) = &req.model {
+        // Shape only; which models are allowed is the control plane's list.
+        if model.is_empty()
+            || model.len() > 64
+            || !model
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
+        {
+            return Err(Error::InvalidRequest(
+                "model must be 1-64 chars of [a-z0-9.-]".into(),
+            ));
+        }
+    }
     let (_, created) = state.control_plane.post("/sessions", &req).await?;
     tracing::info!(
         agent = %req.agent_slug,
         session = created["session_id"].as_str().unwrap_or(""),
         environment = created["environment"].as_str().unwrap_or(""),
         custom_tools = req.tools.len(),
+        model = req.model.as_deref().unwrap_or("agent's own"),
         "session created"
     );
     Ok((StatusCode::CREATED, Json(created)))
