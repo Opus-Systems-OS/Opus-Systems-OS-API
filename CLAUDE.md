@@ -37,7 +37,10 @@ it over the compose network.
   key never gets `keys:admin` or `pair:approve`; a paired device gets
   exactly the fixed profile in `v1/pair.rs`.
 - **Jarvis's voice is server config.** `/v1/voice/speak` proxies Fish Audio
-  with the key and the voice id on the droplet; clients cannot pick a voice.
+  text-to-speech with the key and the voice id on the droplet; clients
+  cannot pick a voice. `/v1/voice/transcribe` is the reverse (Fish
+  speech-to-text) for browsers without a speech service of their own; the
+  transcript is never logged.
 - **Service tokens stay on the server.** `/v1/ops*` turns one read token per
   service (GitHub, UptimeRobot, DigitalOcean, Docker socket, Tailscale,
   Cloudflare) into status rows; a token is never returned, and a service

@@ -112,6 +112,7 @@ Stage 2 (live):
 | `POST /v1/inference/chat` | `inference` | Ollama `/api/chat` body; NDJSON unless `stream:false` |
 | `POST /v1/inference/embeddings` | `inference` | Ollama `/api/embed` body |
 | `POST /v1/voice/speak` | `voice` | `{text (1–2000), format?: mp3|wav|pcm|opus, latency?: low|normal|balanced}` → audio bytes, streamed |
+| `POST /v1/voice/transcribe` | `voice` | one utterance as the raw body, `content-type` `audio/wav` (16 kHz mono recommended), `audio/mpeg` or `audio/mp4`, ≤ 1 MiB; `?language=en` → `{text, duration}`. Fish ASR; WebM is refused (Fish can't decode it). What was said is never logged. |
 | `GET /v1/voice` | `voice` | `{configured, voice_id, model}` |
 | `GET /v1/ops` | `ops:read` | `{services: [{id, name, state, headline, checked_at}]}` — the configured services, hub order |
 | `POST /v1/pair` | none | Start pairing a device: `{code, token, expires_in}` (10 min; 10 starts/min per address) |
