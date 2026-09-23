@@ -263,6 +263,31 @@ pub async fn call_raw(
     (status, headers, bytes)
 }
 
+/// A raw (non-JSON) request body with its own content type; the response
+/// parsed as JSON when it is.
+pub async fn call_bytes(
+    h: &Harness,
+    path: &str,
+    key: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .header(header::CONTENT_TYPE, content_type)
+        .body(Body::from(body))
+        .unwrap();
+    let res = h.app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
 pub fn assert_envelope(json: &Value, kind: &str) {
     assert_eq!(json["error"]["type"], kind, "body: {json}");
     assert!(json["error"]["message"].is_string(), "body: {json}");
@@ -693,7 +718,65 @@ async fn docker_containers() -> Json<Value> {
 fn fish_router(seen: Arc<Mutex<Seen>>) -> Router {
     Router::new()
         .route("/v1/tts", post(fish_tts))
+        .route("/v1/asr", post(fish_asr))
         .with_state(seen)
+}
+
+/// Multipart in, `{text, duration, …}` out. The raw body is inspected rather
+/// than parsed: the test only needs to know the parts arrived.
+async fn fish_asr(
+    State(seen): State<Arc<Mutex<Seen>>>,
+    headers: HeaderMap,
+    body: bytes::Bytes,
+) -> Response {
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let text = String::from_utf8_lossy(&body).into_owned();
+    seen.lock().unwrap().requests.push((
+        "POST".into(),
+        "/v1/asr".into(),
+        Some(json!({
+            "content_type": ct,
+            "has_audio_part": text.contains("name=\"audio\""),
+            "audio_mime": text.contains("Content-Type: audio/wav"),
+            "language_en": text.contains("name=\"language\"\r\n\r\nen"),
+        })),
+    ));
+    if auth != format!("Bearer {FISH_KEY}") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"status":401,"message":"Unauthorized"})),
+        )
+            .into_response();
+    }
+    if text.contains("garbage") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"status":400,"message":"Invalid audio input: the audio could not be decoded (format not recognised)."})),
+        )
+            .into_response();
+    }
+    if text.contains("no credit") {
+        return (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(json!({"status":402,"message":"Insufficient API credit."})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "text": "Jarvis, what is the weather in Calabasas today?",
+        "duration": 3.2,
+        "segments": [],
+        "language": "en"
+    }))
+    .into_response()
 }
 
 async fn fish_tts(

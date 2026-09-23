@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_envelope, call, call_raw, harness, harness_with, Options};
+use common::{assert_envelope, call, call_bytes, call_raw, harness, harness_with, Options};
 use opus_api::auth::keys::Scope;
 use serde_json::json;
 
@@ -731,4 +731,80 @@ async fn voice_routes_absent_when_unconfigured() {
         spec["paths"].get("/voice/speak").is_none(),
         "not in the spec either"
     );
+}
+
+#[tokio::test]
+async fn voice_transcribe_forwards_audio_and_returns_text() {
+    let h = harness_with(Options {
+        voice: true,
+        ..Options::default()
+    })
+    .await;
+    let key = h.key("web", &[Scope::Voice]);
+    let wav = b"RIFF\x24\x00\x00\x00WAVEfmt fake-pcm".to_vec();
+    let path = "/v1/voice/transcribe";
+
+    let (status, json) = call_bytes(&h, path, &key, "audio/wav", wav.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(
+        json["text"],
+        "Jarvis, what is the weather in Calabasas today?"
+    );
+    assert_eq!(json["duration"], 3.2);
+    let seen = h
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .find(|r| r.1 == "/v1/asr")
+        .and_then(|r| r.2.clone())
+        .unwrap();
+    assert!(
+        seen["content_type"]
+            .as_str()
+            .unwrap()
+            .starts_with("multipart/form-data"),
+        "{seen}"
+    );
+    assert_eq!(seen["has_audio_part"], true);
+    assert_eq!(seen["audio_mime"], true);
+    assert_eq!(seen["language_en"], true, "language defaults to en");
+
+    // WebM (what MediaRecorder makes) is refused before any upstream call.
+    let (status, json) = call_bytes(&h, path, &key, "audio/webm", wav.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_envelope(&json, "invalid_request");
+    // Empty, a bad language, and Fish's own "could not be decoded".
+    let (status, _) = call_bytes(&h, path, &key, "audio/wav", Vec::new()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call_bytes(
+        &h,
+        "/v1/voice/transcribe?language=english",
+        &key,
+        "audio/wav",
+        wav.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, json) = call_bytes(&h, path, &key, "audio/wav", b"garbage".to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not be decoded"),
+        "{json}"
+    );
+    // Out of credit is the provider's failure, not the caller's.
+    let (status, json) = call_bytes(&h, path, &key, "audio/wav", b"no credit".to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    // Over 1 MiB never reaches Fish.
+    let (status, _) = call_bytes(&h, path, &key, "audio/wav", vec![0u8; 1024 * 1024 + 1]).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // A key without the voice scope can't use it.
+    let other = h.key("fleet-only", &[Scope::FleetRead]);
+    let (status, _) = call_bytes(&h, path, &other, "audio/wav", wav).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
