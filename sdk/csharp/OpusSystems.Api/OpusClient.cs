@@ -164,6 +164,9 @@ namespace OpusSystems.Api
         /// <summary>Which voice the API speaks with; throws not_found when voice is not configured.</summary>
         public Task<VoiceInfo> VoiceInfoAsync(CancellationToken ct = default) => GetAsync<VoiceInfo>("voice", ct);
 
+        /// <summary>What is left of the Fish Audio API credit the voice draws on. Needs the voice scope.</summary>
+        public Task<VoiceCredit> VoiceCreditAsync(CancellationToken ct = default) => GetAsync<VoiceCredit>("voice/credit", ct);
+
         // ---- pairing (no key) ----------------------------------------------
 
         /// <summary>Start pairing this device: show <c>code</c>, keep <c>token</c>. Works with an empty key.</summary>

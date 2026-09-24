@@ -719,7 +719,36 @@ fn fish_router(seen: Arc<Mutex<Seen>>) -> Router {
     Router::new()
         .route("/v1/tts", post(fish_tts))
         .route("/v1/asr", post(fish_asr))
+        .route("/wallet/self/api-credit", get(fish_credit))
         .with_state(seen)
+}
+
+async fn fish_credit(State(seen): State<Arc<Mutex<Seen>>>, headers: HeaderMap) -> Response {
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    seen.lock()
+        .unwrap()
+        .requests
+        .push(("GET".into(), "/wallet/self/api-credit".into(), None));
+    if auth != format!("Bearer {FISH_KEY}") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"status":401,"message":"Unauthorized"})),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "_id": "wallet_1",
+        "user_id": "fish-user-secret",
+        "credit": "12.34",
+        "cumulative_top_up": "20.00",
+        "created_at": "2026-09-01T00:00:00Z",
+        "updated_at": "2026-09-24T00:00:00Z",
+        "has_phone_sha256": false
+    }))
+    .into_response()
 }
 
 /// Multipart in, `{text, duration, …}` out. The raw body is inspected rather

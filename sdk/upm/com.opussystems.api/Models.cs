@@ -139,6 +139,14 @@ namespace OpusSystems.Api
         [JsonProperty("model")] public string? Model { get; set; }
     }
 
+    /// <summary>Fish Audio API credit, read at most every 5 minutes.</summary>
+    public sealed class VoiceCredit
+    {
+        /// <summary>US dollars as Fish reports them, a decimal string ("12.34").</summary>
+        [JsonProperty("credit_usd")] public string CreditUsd { get; set; } = "";
+        [JsonProperty("checked_at")] public string CheckedAt { get; set; } = "";
+    }
+
     /// <summary>Helpers over Anthropic's event objects.</summary>
     public static class Events
     {
