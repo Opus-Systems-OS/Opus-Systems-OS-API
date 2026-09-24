@@ -116,6 +116,19 @@ pub async fn info(State(state): State<AppState>) -> Result<Json<VoiceInfo>> {
     }))
 }
 
+#[utoipa::path(get, path = "/voice/credit", tag = "voice", security(("api_key" = ["voice"])),
+    responses(
+        (status = 200, description = "Fish Audio API credit; read at most every 5 minutes", body = crate::upstream::fish_audio::VoiceCredit),
+        (status = 502, description = "the voice provider rejected the request (key)", body = crate::openapi::ErrorBody),
+        (status = 503, description = "the voice provider is overloaded; `Retry-After`", body = crate::openapi::ErrorBody),
+    ))]
+pub async fn credit(
+    State(state): State<AppState>,
+) -> Result<Json<crate::upstream::fish_audio::VoiceCredit>> {
+    let voice = state.voice.as_ref().as_ref().ok_or(Error::NotFound)?;
+    Ok(Json(voice.credit().await?))
+}
+
 /// A recording's upper bound: 1 MiB is ~30 s of 16 kHz mono WAV.
 const AUDIO_MAX_BYTES: usize = 1024 * 1024;
 /// Containers Fish decodes (WebM is not one — clients send WAV).
@@ -188,6 +201,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     let text = OpenApiRouter::new()
         .routes(routes!(speak))
         .routes(routes!(info))
+        .routes(routes!(credit))
         .route_layer(DefaultBodyLimit::max(64 * 1024));
     let audio = OpenApiRouter::new()
         .routes(routes!(transcribe))

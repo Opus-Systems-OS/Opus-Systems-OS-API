@@ -4,19 +4,41 @@
 //! (`reference_id`) and the model header are server configuration; a client
 //! sends text and gets audio, or sends audio and gets text. TTS responses
 //! stream (`Transfer-Encoding: chunked`) and are handed back whole for the
-//! handler to forward.
+//! handler to forward. The API credit balance (`GET /wallet/self/api-credit`)
+//! is read for the HUD's credit warning and cached for `CREDIT_TTL`.
 
 use crate::config::VoiceConfig;
 use crate::error::{Error, Result};
 use reqwest::{Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+/// How long one read of the credit balance is reused.
+pub const CREDIT_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub struct FishAudio {
     http: reqwest::Client,
     base_url: String,
     cfg: VoiceConfig,
+    credit: Arc<Mutex<Option<(Instant, VoiceCredit)>>>,
+}
+
+/// Fish Audio's API credit: what speech and transcription draw on. Separate
+/// from the fish.audio platform plan.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct VoiceCredit {
+    /// US dollars as Fish reports them, a decimal string (`"12.34"`).
+    pub credit_usd: String,
+    /// RFC 3339, when this was last read from Fish.
+    pub checked_at: String,
+}
+
+#[derive(Deserialize)]
+struct ApiCredit {
+    credit: String,
 }
 
 #[derive(Serialize)]
@@ -41,6 +63,7 @@ impl FishAudio {
             http,
             base_url: base_url.trim_end_matches('/').to_owned(),
             cfg,
+            credit: Arc::default(),
         })
     }
 
@@ -109,6 +132,37 @@ impl FishAudio {
             return Err(Error::InvalidRequest(message));
         }
         Err(provider_error(res).await)
+    }
+}
+
+impl FishAudio {
+    /// The API credit balance, from cache when read within `CREDIT_TTL`.
+    /// Failures are not cached, so the next call tries again.
+    pub async fn credit(&self) -> Result<VoiceCredit> {
+        let mut cached = self.credit.lock().await;
+        if let Some((at, credit)) = &*cached {
+            if at.elapsed() < CREDIT_TTL {
+                return Ok(credit.clone());
+            }
+        }
+        let res = self
+            .http
+            .get(format!("{}/wallet/self/api-credit", self.base_url))
+            .bearer_auth(&self.cfg.fish_audio_api_key)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(provider_error(res).await);
+        }
+        let body: ApiCredit = res.json().await?;
+        let credit = VoiceCredit {
+            credit_usd: body.credit,
+            checked_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+        };
+        *cached = Some((Instant::now(), credit.clone()));
+        Ok(credit)
     }
 }
 

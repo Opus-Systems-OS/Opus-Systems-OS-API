@@ -678,6 +678,40 @@ async fn voice_speak_streams_audio_with_the_server_side_voice() {
 }
 
 #[tokio::test]
+async fn voice_credit_reads_fish_once_per_ttl() {
+    let h = harness_with(Options {
+        voice: true,
+        ..Options::default()
+    })
+    .await;
+    let key = h.key("web", &[Scope::Voice]);
+    let (status, _, json) = call(&h, Method::GET, "/v1/voice/credit", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["credit_usd"], "12.34");
+    assert!(json["checked_at"].as_str().unwrap().ends_with('Z'));
+    assert!(
+        !json.to_string().contains("fish-user-secret"),
+        "Fish's user id stays here"
+    );
+    let (status, _, again) = call(&h, Method::GET, "/v1/voice/credit", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again, json, "second read is the cached one");
+    let hits = h
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .filter(|(_, p, _)| p == "/wallet/self/api-credit")
+        .count();
+    assert_eq!(hits, 1);
+
+    let narrow = h.key("narrow", &[Scope::UsageRead]);
+    let (status, _, _) = call(&h, Method::GET, "/v1/voice/credit", Some(&narrow), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn voice_provider_errors_map() {
     let h = harness_with(Options {
         voice: true,

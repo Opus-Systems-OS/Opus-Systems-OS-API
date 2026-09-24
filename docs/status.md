@@ -142,6 +142,9 @@ documents image blocks for `user.message`).
 `POST /v1/voice/speak` (scope `voice`) proxies Fish Audio with the key and
 reference voice on the droplet; every client (Tauri, Swift, Quest) speaks
 with it. Fish bills per character against the user's API credit.
+`GET /v1/voice/credit` (2026-09-24, for the web HUD's credit warnings)
+returns that credit as `credit_usd`, cached 5 min; the key and Fish user
+id stay on the server.
 
 ## Ops — done 2026-09-20 ~01:10 UTC (#14, Iron-Fleet #36)
 
