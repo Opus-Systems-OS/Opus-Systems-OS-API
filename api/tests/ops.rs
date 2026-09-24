@@ -5,7 +5,7 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{assert_envelope, call, harness, harness_with, Options};
 use opus_api::auth::keys::Scope;
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn ops_harness() -> Options {
     Options {
@@ -270,4 +270,47 @@ async fn session_model_is_forwarded_and_shape_checked() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
         assert_envelope(&json, "invalid_request");
     }
+}
+
+#[tokio::test]
+async fn clients_show_names_and_last_seen_never_key_details() {
+    let h = harness().await;
+    // mac: used once. quest-3: an old revoked key and a fresh unused one.
+    // web: never used.
+    let mac = h.key("mac", &[Scope::FleetRead]);
+    let old_quest = opus_api::v1::keys::create_key(&h.db, "quest-3", &[Scope::FleetRead]).unwrap();
+    let (status, _, _) = call(&h, Method::GET, "/v1/me", Some(&mac), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = call(&h, Method::GET, "/v1/me", Some(&old_quest.key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(h.db.revoke_key(&old_quest.id).unwrap());
+    let _new_quest = h.key("quest-3", &[Scope::FleetRead]);
+    let _web = h.key("web", &[Scope::FleetRead]);
+
+    let viewer = h.key("hud", &[Scope::OpsRead]);
+    let (status, _, json) = call(&h, Method::GET, "/v1/clients", Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let rows = json["data"].as_array().unwrap();
+    let row = |n: &str| {
+        rows.iter()
+            .find(|r| r["name"] == n)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    assert!(row("mac")["last_seen_at"].is_string(), "{json}");
+    assert!(
+        row("quest-3")["last_seen_at"].is_null(),
+        "the revoked key's use doesn't count: {json}"
+    );
+    assert!(row("web")["last_seen_at"].is_null());
+    assert_eq!(rows.iter().filter(|r| r["name"] == "quest-3").count(), 1);
+    for r in rows {
+        let keys: Vec<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["last_seen_at", "name", "since"], "{r}");
+    }
+    assert!(!json.to_string().contains("osk_"));
+
+    let (status, _, json) = call(&h, Method::GET, "/v1/clients", Some(&mac), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_envelope(&json, "forbidden");
 }

@@ -5,6 +5,7 @@
 //! its scope applied as a `route_layer`. Every route is registered through
 //! `utoipa_axum` so the spec and the router cannot drift apart.
 
+pub mod clients;
 pub mod fleet;
 pub mod health;
 pub mod inference;
@@ -67,6 +68,7 @@ pub fn router(state: AppState) -> Router {
             fleet::router().merge(rig::router()),
         ))
         .merge(scoped(Scope::UsageRead, usage::router()))
+        .merge(scoped(Scope::OpsRead, clients::router()))
         .merge(scoped(Scope::Inference, inference::router()))
         // sessions: GET and POST share paths with different scopes, so the
         // check is per handler (see sessions.rs).
