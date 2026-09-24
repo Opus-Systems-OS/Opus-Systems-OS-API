@@ -111,6 +111,7 @@ Stage 2 (live):
 | `GET /v1/inference/models` | `inference` | Ollama `/api/tags` |
 | `POST /v1/inference/chat` | `inference` | Ollama `/api/chat` body; NDJSON unless `stream:false` |
 | `POST /v1/inference/embeddings` | `inference` | Ollama `/api/embed` body |
+| `GET /v1/clients` | `ops:read` | `{data: [{name, last_seen_at, since}]}` — each live key name once, its latest use (≈ 1 min resolution). No ids, secrets or scopes. |
 | `POST /v1/voice/speak` | `voice` | `{text (1–2000), format?: mp3|wav|pcm|opus, latency?: low|normal|balanced}` → audio bytes, streamed |
 | `POST /v1/voice/transcribe` | `voice` | one utterance as the raw body, `content-type` `audio/wav` (16 kHz mono recommended), `audio/mpeg` or `audio/mp4`, ≤ 1 MiB; `?language=en` → `{text, duration}`. Fish ASR; WebM is refused (Fish can't decode it). What was said is never logged. |
 | `GET /v1/voice` | `voice` | `{configured, voice_id, model}` |
