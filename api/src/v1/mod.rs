@@ -6,6 +6,7 @@
 //! `utoipa_axum` so the spec and the router cannot drift apart.
 
 pub mod clients;
+pub mod files;
 pub mod fleet;
 pub mod health;
 pub mod inference;
@@ -73,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         // sessions: GET and POST share paths with different scopes, so the
         // check is per handler (see sessions.rs).
         .merge(sessions::router())
+        .merge(files::router())
         .merge(ws::router());
     if state.voice.is_some() {
         protected = protected.merge(scoped(Scope::Voice, voice::router()));

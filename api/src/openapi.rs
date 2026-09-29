@@ -41,6 +41,7 @@ pub struct ErrorDetail {
         (name = "keys", description = "Key administration (keys:admin)"),
         (name = "fleet", description = "The fleet as configured, and the rig (fleet:read)"),
         (name = "sessions", description = "Managed Agents sessions (sessions:read / sessions:write)"),
+        (name = "files", description = "Files attached to session messages, and files agents hand back (sessions:write / sessions:read)"),
         (name = "usage", description = "Spend rollups and the CSV audit trail (usage:read)"),
         (name = "inference", description = "Local models on the rig (inference)"),
         (name = "voice", description = "Jarvis's voice — text to speech (voice)"),

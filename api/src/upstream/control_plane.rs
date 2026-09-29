@@ -73,6 +73,31 @@ impl ControlPlane {
         Ok((status, res.json().await?))
     }
 
+    /// `POST path` with a body passed through as is (a multipart upload),
+    /// `content_type` included → `(status, parsed JSON)`. Up to 2 minutes:
+    /// the control plane forwards the bytes to Anthropic before answering.
+    pub async fn post_bytes(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: bytes::Bytes,
+    ) -> Result<(StatusCode, Value)> {
+        let res = self
+            .stream
+            .post(format!("{}{}", self.base_url, path))
+            .bearer_auth(&self.token)
+            .header(http::header::CONTENT_TYPE, content_type)
+            .timeout(Duration::from_secs(120))
+            .body(body)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(upstream_error(res).await);
+        }
+        let status = res.status();
+        Ok((status, res.json().await?))
+    }
+
     /// A 2xx response whose body the caller streams (SSE, NDJSON, CSV).
     /// Status is already checked.
     pub async fn open<B: Serialize + ?Sized>(

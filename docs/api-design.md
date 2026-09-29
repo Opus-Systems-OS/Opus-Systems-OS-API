@@ -98,11 +98,14 @@ Stage 2 (live):
 |---|---|---|
 | `GET /v1/fleet/agents` | `fleet:read` | `{data:[…]}`, the registry as synced; caps are cent strings |
 | `GET /v1/rig` | `fleet:read` | `{configured, online, models, reason}` — always 200 |
-| `POST /v1/sessions` | `sessions:write` | `{agent_slug, task, environment?, repositories?, tools?, system_suffix?}` → 201 |
+| `POST /v1/sessions` | `sessions:write` | `{agent_slug, task, environment?, repositories?, tools?, system_suffix?, client?, model?, attachments?}` → 201 |
 | `GET /v1/sessions` | `sessions:read` | `?agent_slug&limit&page&order`; Anthropic's page envelope |
 | `GET /v1/sessions/{id}` | `sessions:read` | The session object + `console_url` |
 | `GET /v1/sessions/{id}/events` | `sessions:read` | `?page&limit&types&order`; `order=desc&limit=1` = the latest |
-| `POST /v1/sessions/{id}/events` | `sessions:write` | `{task}` — a follow-up; resumes an idle session |
+| `POST /v1/sessions/{id}/events` | `sessions:write` | `{task, attachments?}` — a follow-up; resumes an idle session |
+| `POST /v1/files` | `sessions:write` | `multipart/form-data`, one part `file`, ≤ 32 MB → 201 `{file_id, filename, mime_type, size_bytes}`; see Files |
+| `GET /v1/sessions/{id}/files` | `sessions:read` | Anthropic's file list for the session; `downloadable` = an agent output |
+| `GET /v1/files/{id}/content` | `sessions:read` | A downloadable file, streamed, `Content-Disposition` named |
 | `POST /v1/sessions/{id}/tool-results` | `sessions:write` | `{results:[{custom_tool_use_id, content, is_error?}]}` — answers `agent.custom_tool_use` |
 | `POST /v1/sessions/{id}/interrupt` | `sessions:write` | Appends `user.interrupt` |
 | `GET /v1/sessions/{id}/stream` | `sessions:read` | SSE, byte-for-byte from upstream; `?event_deltas=` |
@@ -179,6 +182,20 @@ answers with `POST /sessions/{id}/tool-results` (or the WebSocket
 `tool_result` frame), and the turn continues. `system_suffix` is the same
 idea for the prompt: a client's persona or device context, appended to the
 agent's system prompt for that session only.
+
+### Files
+
+`POST /v1/files` passes the upload to the control plane, which sends it to
+Anthropic's Files API and records the id. `attachments` on a session create
+or message (≤ 10 ids) must be ids recorded there, since the Files API is
+workspace-wide and an id is not a capability. Each attachment is mounted
+read-only in the sandbox at `/mnt/session/uploads/<filename>` (a clash gets
+`-2`). Images (jpeg/png/gif/webp) and PDFs of 5 MB or less also go into the
+message as `image`/`document` blocks. The message ends with a line per file
+giving its path, type, size and `file_id`, so that an agent can pass it on.
+With attachments, `task` may be empty. What an agent writes to
+`/mnt/session/outputs/` comes back as `downloadable` entries in
+`GET /v1/sessions/{id}/files`.
 
 Session and event objects are Anthropic's, passed through unchanged; their
 shape is Anthropic's contract. Everything the API composes itself
