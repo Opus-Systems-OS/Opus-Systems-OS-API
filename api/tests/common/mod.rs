@@ -311,6 +311,9 @@ fn stub_router(state: StubState) -> Router {
         .route("/sessions/{id}/stream", get(stream))
         .route("/sessions/{id}/interrupt", post(interrupt))
         .route("/sessions/{id}/tool-results", post(tool_results))
+        .route("/files", post(upload_file))
+        .route("/files/{id}/content", get(file_content))
+        .route("/sessions/{id}/files", get(session_files))
         .route("/usage", get(usage))
         .route("/usage/export.csv", get(usage_csv))
         .route("/inference/models", get(models))
@@ -430,6 +433,52 @@ async fn send_event(Json(body): Json<Value>) -> Json<Value> {
     Json(
         json!({"data":[{"id":"sevt_2","type":"user.message","content":[{"type":"text","text":body["task"]}]}]}),
     )
+}
+
+/// Checks the multipart body arrived whole, boundary and all.
+async fn upload_file(headers: HeaderMap, body: bytes::Bytes) -> Response {
+    let ctype = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let boundary = ctype.split("boundary=").nth(1).unwrap_or("-none-");
+    let text = String::from_utf8_lossy(&body);
+    if !text.contains(boundary) || !text.contains("name=\"file\"") {
+        return cp_error(
+            400,
+            "invalid_request",
+            "expected a multipart part named `file`",
+        );
+    }
+    (
+        StatusCode::CREATED,
+        Json(json!({"file_id":"file_1","filename":"shot.png","mime_type":"image/png","size_bytes":body.len()})),
+    )
+        .into_response()
+}
+
+async fn session_files(Path(id): Path<String>) -> Json<Value> {
+    Json(
+        json!({"data":[{"id":"file_out","filename":"summary.md","mime_type":"text/markdown","size_bytes":5,"downloadable":true,"scope":id}]}),
+    )
+}
+
+async fn file_content(Path(id): Path<String>) -> Response {
+    if id == "file_1" {
+        return cp_error(
+            502,
+            "upstream",
+            "invalid_request_error: file is not downloadable",
+        );
+    }
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/markdown")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=\"summary.md\"",
+        )
+        .body(Body::from("# hi\n"))
+        .unwrap()
 }
 
 async fn interrupt() -> Json<Value> {

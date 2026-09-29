@@ -42,6 +42,27 @@ pub(super) fn valid_id(id: &str) -> Result<()> {
     }
 }
 
+/// A message needs words or files; attachment ids are shape-checked here
+/// and resolved (against the uploads the control plane made) there.
+fn task_or_attachments(task: &str, attachments: &[String]) -> Result<()> {
+    if task.trim().is_empty() && attachments.is_empty() {
+        return Err(Error::InvalidRequest("task must not be empty".into()));
+    }
+    if attachments.len() > 10 {
+        return Err(Error::InvalidRequest(
+            "at most 10 attachments per message".into(),
+        ));
+    }
+    for id in attachments {
+        if !super::files::valid_file_id(id) {
+            return Err(Error::InvalidRequest(format!(
+                "attachment `{id}` is not a file id"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn body_or_400<T>(body: std::result::Result<Json<T>, JsonRejection>) -> Result<T> {
     body.map(|Json(b)| b)
         .map_err(|e| Error::InvalidRequest(e.body_text()))
@@ -89,6 +110,13 @@ pub struct CreateSession {
     /// session's life, so switching models means a new session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// `file_id`s from `POST /v1/files`, at most 10. Each is mounted
+    /// read-only in the sandbox under `/mnt/session/uploads/`; images and
+    /// PDFs up to 5 MB are also shown to the model in the message. Only
+    /// files uploaded through this API are accepted. With attachments,
+    /// `task` may be empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
 
 /// A client-executed tool. `input_schema` is a JSON Schema object.
@@ -205,9 +233,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>)> {
     who.require(Scope::SessionsWrite)?;
     let req = body_or_400(body)?;
-    if req.task.trim().is_empty() {
-        return Err(Error::InvalidRequest("task must not be empty".into()));
-    }
+    task_or_attachments(&req.task, &req.attachments)?;
     valid_id(&req.agent_slug)
         .map_err(|_| Error::InvalidRequest("agent_slug has unexpected characters".into()))?;
     validate_custom_tools(&req.tools)?;
@@ -377,7 +403,11 @@ pub async fn events(
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
     /// A follow-up user message. Sending to an idle session resumes it.
+    #[serde(default)]
     pub task: String,
+    /// As on create: `file_id`s from `POST /v1/files`, at most 10.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
 
 #[utoipa::path(post, path = "/sessions/{id}/events", tag = "sessions", security(("api_key" = ["sessions:write"])),
@@ -393,9 +423,7 @@ pub async fn send(
     who.require(Scope::SessionsWrite)?;
     valid_id(&id)?;
     let req = body_or_400(body)?;
-    if req.task.trim().is_empty() {
-        return Err(Error::InvalidRequest("task must not be empty".into()));
-    }
+    task_or_attachments(&req.task, &req.attachments)?;
     let (_, out) = state
         .control_plane
         .post(&format!("/sessions/{id}/events"), &req)

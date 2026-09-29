@@ -3,7 +3,7 @@
 
 mod common;
 
-use axum::http::{Method, StatusCode};
+use axum::http::{header, Method, StatusCode};
 use common::{assert_envelope, call, call_bytes, call_raw, harness, harness_with, Options};
 use opus_api::auth::keys::Scope;
 use serde_json::json;
@@ -841,4 +841,110 @@ async fn voice_transcribe_forwards_audio_and_returns_text() {
     let other = h.key("fleet-only", &[Scope::FleetRead]);
     let (status, _) = call_bytes(&h, path, &other, "audio/wav", wav).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn files_upload_attach_and_hand_back() {
+    let h = harness().await;
+    let writer = h.key("w", &[Scope::SessionsRead, Scope::SessionsWrite]);
+    let reader = h.key("r", &[Scope::SessionsRead]);
+
+    // Multipart passes through untouched, boundary and all.
+    let boundary = "XyZ123";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shot.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n--{boundary}--\r\n"
+    );
+    let ctype = format!("multipart/form-data; boundary={boundary}");
+    let (status, json) =
+        call_bytes(&h, "/v1/files", &writer, &ctype, body.clone().into_bytes()).await;
+    assert_eq!(status, StatusCode::CREATED, "{json}");
+    assert_eq!(json["file_id"], "file_1");
+    let (_, path, _) = h.last_upstream();
+    assert_eq!(path, "/files");
+
+    // Needs sessions:write, and multipart.
+    let (status, _) = call_bytes(&h, "/v1/files", &reader, &ctype, body.into_bytes()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, json) =
+        call_bytes(&h, "/v1/files", &writer, "image/png", b"PNGDATA".to_vec()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_envelope(&json, "invalid_request");
+
+    // Attachments ride on create and on a follow-up; files alone are a message.
+    let (status, _, _) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions",
+        Some(&writer),
+        Some(json!({"agent_slug": "jarvis", "task": "", "attachments": ["file_1"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, _, sent) = h.last_upstream();
+    assert_eq!(sent.unwrap()["attachments"], json!(["file_1"]));
+    let (status, _, _) = call(
+        &h,
+        Method::POST,
+        "/v1/sessions/sesn_1/events",
+        Some(&writer),
+        Some(json!({"attachments": ["file_1"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, sent) = h.last_upstream();
+    assert_eq!(
+        sent.unwrap(),
+        json!({"task": "", "attachments": ["file_1"]})
+    );
+
+    // Neither words nor files; a malformed id.
+    for body in [
+        json!({"task": " "}),
+        json!({"task": "x", "attachments": ["../etc"]}),
+    ] {
+        let (status, _, json) = call(
+            &h,
+            Method::POST,
+            "/v1/sessions/sesn_1/events",
+            Some(&writer),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    }
+
+    // Outputs: listed, then downloaded with their name.
+    let (status, _, json) = call(
+        &h,
+        Method::GET,
+        "/v1/sessions/sesn_1/files",
+        Some(&reader),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["data"][0]["downloadable"], true);
+    let (status, headers, bytes) = call_raw(
+        &h,
+        Method::GET,
+        "/v1/files/file_out/content",
+        Some(&reader),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"summary.md\""
+    );
+    assert_eq!(&bytes[..], b"# hi\n");
+    let (status, _, _) = call_raw(
+        &h,
+        Method::GET,
+        "/v1/files/nope/content",
+        Some(&reader),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
