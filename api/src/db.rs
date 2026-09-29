@@ -1,5 +1,6 @@
-//! SQLite for the one thing the API owns: its clients' keys. Everything else
-//! it serves is read live from upstream. Same open/migrate shape as
+//! SQLite for what the API owns: its clients' keys, and the OAuth tokens of
+//! the briefing's sources (with the one-time states that start a consent).
+//! Everything else it serves is read live from upstream. Same open/migrate shape as
 //! Iron-Fleet's control plane so the two are operated the same way.
 
 use crate::auth::keys::{Scope, ScopeSet};
@@ -18,7 +19,31 @@ CREATE TABLE IF NOT EXISTS api_keys (
   last_used_at   TEXT,
   revoked_at     TEXT
 );
+-- One row per provider ("google", "whoop"). The refresh token is replaced
+-- whenever the provider sends a new one (WHOOP rotates on every refresh).
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  provider       TEXT PRIMARY KEY,
+  refresh_token  TEXT NOT NULL,
+  access_token   TEXT,
+  expires_at     INTEGER,            -- unix seconds
+  updated_at     TEXT NOT NULL
+);
+-- A consent in flight: `opus-api oauth start` writes it, the callback takes
+-- it (once, within 15 minutes).
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state       TEXT PRIMARY KEY,
+  provider    TEXT NOT NULL,
+  created_at  INTEGER NOT NULL        -- unix seconds
+);
 "#;
+
+/// A provider's stored tokens.
+pub struct OAuthTokenRow {
+    pub refresh_token: String,
+    pub access_token: Option<String>,
+    pub expires_at: Option<i64>,
+    pub updated_at: String,
+}
 
 #[derive(Clone)]
 pub struct Db {
@@ -130,6 +155,111 @@ impl Db {
         })
     }
 
+    /// Add scopes to a live key (never `keys:admin`: minting is the only
+    /// path to that). `Ok(None)` if there is no such live key; otherwise
+    /// the key's scopes after the grant.
+    pub fn grant_scopes(&self, id: &str, add: &[Scope]) -> Result<Option<Vec<Scope>>> {
+        let Some(key) = self.key(id)? else {
+            return Ok(None);
+        };
+        if key.revoked_at.is_some() {
+            return Ok(None);
+        }
+        let mut scopes: std::collections::BTreeSet<Scope> = key.scopes.into_iter().collect();
+        scopes.extend(add.iter().copied().filter(|s| *s != Scope::KeysAdmin));
+        let scopes: Vec<Scope> = scopes.into_iter().collect();
+        self.with(|c| {
+            c.execute(
+                "UPDATE api_keys SET scopes = ?2 WHERE id = ?1",
+                params![id, Scope::join(&scopes)],
+            )
+        })?;
+        Ok(Some(scopes))
+    }
+
+    // ---- OAuth (briefing sources)
+
+    pub fn insert_oauth_state(&self, state: &str, provider: &str) -> Result<()> {
+        let now = unix_now();
+        self.with(|c| {
+            // Old states are dead weight; clear them on the way in.
+            c.execute(
+                "DELETE FROM oauth_states WHERE created_at < ?1",
+                params![now - 86_400],
+            )?;
+            c.execute(
+                "INSERT INTO oauth_states (state, provider, created_at) VALUES (?1, ?2, ?3)",
+                params![state, provider, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The provider a state was issued for, if it exists and is younger
+    /// than `max_age_secs`. Taking it deletes it: a state works once.
+    pub fn take_oauth_state(&self, state: &str, max_age_secs: i64) -> Result<Option<String>> {
+        let now = unix_now();
+        self.with(|c| {
+            let row: Option<(String, i64)> = c
+                .query_row(
+                    "SELECT provider, created_at FROM oauth_states WHERE state = ?1",
+                    params![state],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            c.execute("DELETE FROM oauth_states WHERE state = ?1", params![state])?;
+            Ok(row
+                .filter(|(_, at)| now - at <= max_age_secs)
+                .map(|(p, _)| p))
+        })
+    }
+
+    pub fn oauth_token(&self, provider: &str) -> Result<Option<OAuthTokenRow>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT refresh_token, access_token, expires_at, updated_at FROM oauth_tokens WHERE provider = ?1",
+                params![provider],
+                |r| {
+                    Ok(OAuthTokenRow {
+                        refresh_token: r.get(0)?,
+                        access_token: r.get(1)?,
+                        expires_at: r.get(2)?,
+                        updated_at: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+        })
+    }
+
+    /// Save an access token, and the refresh token when one was issued
+    /// (`None` keeps the stored one).
+    pub fn store_oauth_token(
+        &self,
+        provider: &str,
+        refresh: Option<&str>,
+        access: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        self.with(|c| {
+            match refresh {
+                Some(r) => c.execute(
+                    "INSERT INTO oauth_tokens (provider, refresh_token, access_token, expires_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(provider) DO UPDATE SET refresh_token = excluded.refresh_token,
+                       access_token = excluded.access_token, expires_at = excluded.expires_at,
+                       updated_at = excluded.updated_at",
+                    params![provider, r, access, expires_at, now()],
+                )?,
+                None => c.execute(
+                    "UPDATE oauth_tokens SET access_token = ?2, expires_at = ?3, updated_at = ?4 WHERE provider = ?1",
+                    params![provider, access, expires_at, now()],
+                )?,
+            };
+            Ok(())
+        })
+    }
+
     /// Best-effort, coarse: one write per key per minute at most, so a busy
     /// headset doesn't turn every request into a disk write.
     pub fn touch_key(&self, id: &str) -> Result<()> {
@@ -179,6 +309,10 @@ pub fn now() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
+fn unix_now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
 fn minute_ago() -> String {
     (time::OffsetDateTime::now_utc() - time::Duration::seconds(60))
         .format(&time::format_description::well_known::Rfc3339)
@@ -224,6 +358,66 @@ mod tests {
         db.touch_key("k1").unwrap();
         let second = db.key("k1").unwrap().unwrap().last_used_at.unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn grant_adds_scopes_but_never_admin() {
+        let db = Db::in_memory().unwrap();
+        db.insert_key(&row("k1")).unwrap();
+        let after = db
+            .grant_scopes(
+                "k1",
+                &[Scope::SourcesRead, Scope::KeysAdmin, Scope::FleetRead],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after,
+            vec![Scope::FleetRead, Scope::SessionsWrite, Scope::SourcesRead]
+        );
+        assert_eq!(db.key("k1").unwrap().unwrap().scopes, after);
+        assert!(db
+            .grant_scopes("nope", &[Scope::OpsRead])
+            .unwrap()
+            .is_none());
+        db.revoke_key("k1").unwrap();
+        assert!(db.grant_scopes("k1", &[Scope::OpsRead]).unwrap().is_none());
+    }
+
+    #[test]
+    fn oauth_tokens_keep_the_refresh_token_unless_rotated() {
+        let db = Db::in_memory().unwrap();
+        db.store_oauth_token("whoop", Some("r1"), "a1", 100)
+            .unwrap();
+        db.store_oauth_token("whoop", None, "a2", 200).unwrap();
+        let t = db.oauth_token("whoop").unwrap().unwrap();
+        assert_eq!(
+            (
+                t.refresh_token.as_str(),
+                t.access_token.as_deref(),
+                t.expires_at
+            ),
+            ("r1", Some("a2"), Some(200))
+        );
+        db.store_oauth_token("whoop", Some("r2"), "a3", 300)
+            .unwrap();
+        assert_eq!(
+            db.oauth_token("whoop").unwrap().unwrap().refresh_token,
+            "r2"
+        );
+        assert!(db.oauth_token("google").unwrap().is_none());
+    }
+
+    #[test]
+    fn oauth_states_expire() {
+        let db = Db::in_memory().unwrap();
+        db.insert_oauth_state("s1", "google").unwrap();
+        assert_eq!(db.take_oauth_state("s1", -1).unwrap(), None, "too old");
+        assert_eq!(
+            db.take_oauth_state("s1", 900).unwrap(),
+            None,
+            "already taken"
+        );
     }
 
     #[test]

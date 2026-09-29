@@ -123,6 +123,10 @@ Stage 2 (live):
 | `GET /v1/pair/{code}?token=` | none | `202` until approved; then `{api_key, key_id, name, wit_token?, speaker?}` once |
 | `POST /v1/pair/{code}/approve` | `pair:approve` | `{name, wit_token?, speaker?}` → mints the device key (fixed profile), revokes older keys of that name |
 | `GET /v1/ops/{service}` | `ops:read` | The same row with `detail` — `github`, `uptimerobot`, `droplet`, `docker`, `tailscale`, `cloudflare` |
+| `GET /v1/sources` | `sources:read` | `{sources: [{id, name, state, headline, checked_at}]}`: weather, calendar, gmail, youtube, whoop, buffer (the configured ones) |
+| `GET /v1/sources/{source}` | `sources:read` | The same row with `detail` |
+| `GET /v1/briefing?since=` | `sources:read` | `{generated_at, since, sources: [rows with detail]}`; Gmail's detail gains `new_since` |
+| `GET /v1/oauth/{provider}/callback` | none | Where Google/WHOOP return after consent; a one-time state from `opus-api oauth start` is the guard |
 
 ### Voice
 
@@ -169,6 +173,28 @@ none the routes don't exist. A service is polled at most every 30 s however
 many clients ask; one that rejects its token or cannot be reached is a
 `down` row carrying the reason — the hub itself never fails because one
 service did. Tokens are never returned, only what is derived from them.
+
+### Briefing sources
+
+The web HUD's greeting and Jarvis's `briefing` tool read these. Each source
+works like an ops service: a 5-minute cache, a `down` row with the reason on
+failure, and a token never in a response.
+
+| Source | From | Detail |
+|---|---|---|
+| weather | Open-Meteo, no key (`BRIEFING_LATITUDE/LONGITUDE/PLACE`) | `temperature_f`, `conditions`, `high_f`, `low_f`, `rain_chance_pct`, `wind_mph` |
+| calendar | Google Calendar, primary, today in Pacific time | `events: [{title, start, end, all_day, location}]` |
+| gmail | Gmail inbox | `unread`, `recent: [{from, subject, at}]` (10 newest unread) |
+| youtube | YouTube Analytics + Data | `views_7d`, `views_prior_7d`, `change_pct`, `subscribers`, `net_subscribers_7d` (both windows end 2 days ago, since Analytics lags) |
+| whoop | WHOOP v2 | `recovery_pct`, `band`, `resting_hr`, `hrv_ms`, `sleep_performance_pct`, `strain` |
+| buffer | Buffer GraphQL | `queued`, `next: [{text, due_at}]` |
+
+Google and WHOOP use OAuth refresh tokens held in the API's database:
+`opus-api oauth start google|whoop` prints a consent URL, and the provider's
+redirect lands on the public callback, which takes the state once (≤ 15 min).
+A refresh token the provider rotates is stored as soon as it is issued.
+`opus-api keys grant --id <id> --scopes sources:read` adds the scope to an
+existing key.
 
 ### Client-executed tools
 
