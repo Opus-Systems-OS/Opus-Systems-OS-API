@@ -23,6 +23,70 @@ pub struct Config {
     /// Read tokens for the stack's services, for `/v1/ops*`. Each is
     /// optional; with none set the routes don't exist.
     pub ops: OpsConfig,
+    /// The briefing's sources, for `/v1/sources*` and `/v1/briefing`.
+    pub sources: SourcesConfig,
+}
+
+/// Where the briefing's weather is, the API's public URL (OAuth redirects
+/// come back to it), and each source's client credentials. Weather needs
+/// none; every other source is off until its credentials are set.
+#[derive(Debug, Clone)]
+pub struct SourcesConfig {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub place: String,
+    /// `https://api.opustower.dev`, no trailing slash.
+    pub public_url: String,
+    pub google: Option<OAuthClient>,
+    pub whoop: Option<OAuthClient>,
+    pub buffer_api_key: Option<String>,
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        SourcesConfig {
+            latitude: 34.137,
+            longitude: -118.661,
+            place: "Calabasas".into(),
+            public_url: "https://api.opustower.dev".into(),
+            google: None,
+            whoop: None,
+            buffer_api_key: None,
+        }
+    }
+}
+
+/// An OAuth client registered with a provider (Google Cloud, WHOOP).
+#[derive(Clone)]
+pub struct OAuthClient {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl std::fmt::Debug for OAuthClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthClient")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .finish()
+    }
+}
+
+fn oauth_client(id: &str, secret: &str) -> Option<OAuthClient> {
+    Some(OAuthClient {
+        client_id: optional(id)?,
+        client_secret: optional(secret)?,
+    })
+}
+
+fn float(name: &str, default: f64) -> Result<f64> {
+    optional(name)
+        .map(|v| {
+            v.parse::<f64>()
+                .map_err(|_| Error::Config(format!("{name} must be a number, got {v:?}")))
+        })
+        .transpose()
+        .map(|v| v.unwrap_or(default))
 }
 
 /// One read-only credential per service the ops panels watch. The API
@@ -134,6 +198,20 @@ impl Config {
                 github_token: optional("GITHUB_TOKEN"),
                 github_org: optional("GITHUB_ORG").unwrap_or_else(|| "Opus-Systems-OS".to_owned()),
                 docker_socket: optional("DOCKER_SOCKET").map(PathBuf::from),
+            },
+            sources: {
+                let d = SourcesConfig::default();
+                SourcesConfig {
+                    latitude: float("BRIEFING_LATITUDE", d.latitude)?,
+                    longitude: float("BRIEFING_LONGITUDE", d.longitude)?,
+                    place: optional("BRIEFING_PLACE").unwrap_or(d.place),
+                    public_url: optional("API_PUBLIC_URL")
+                        .map(|u| u.trim_end_matches('/').to_owned())
+                        .unwrap_or(d.public_url),
+                    google: oauth_client("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
+                    whoop: oauth_client("WHOOP_CLIENT_ID", "WHOOP_CLIENT_SECRET"),
+                    buffer_api_key: optional("BUFFER_API_KEY"),
+                }
             },
         })
     }

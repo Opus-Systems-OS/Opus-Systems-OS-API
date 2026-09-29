@@ -16,6 +16,7 @@ pub mod ops;
 pub mod pair;
 pub mod rig;
 pub mod sessions;
+pub mod sources;
 pub mod usage;
 pub mod voice;
 pub mod ws;
@@ -28,6 +29,7 @@ use crate::error::Error;
 use crate::upstream::control_plane::ControlPlane;
 use crate::upstream::fish_audio::FishAudio;
 use crate::upstream::ops::Ops;
+use crate::upstream::sources::Sources;
 use axum::middleware::from_fn_with_state;
 use axum::Router;
 use std::sync::Arc;
@@ -46,6 +48,10 @@ pub struct AppState {
     /// `Some` when at least one service token is set; otherwise `/v1/ops*`
     /// is not registered at all.
     pub ops: Arc<Option<Ops>>,
+    /// The briefing's sources. `Some` in the service (weather needs no
+    /// key); `None` leaves `/v1/sources*`, `/v1/briefing` and the OAuth
+    /// callback unregistered.
+    pub sources: Arc<Option<Sources>>,
     /// Pending device pairings (in memory, ten-minute codes).
     pub pairings: pair::Pairings,
 }
@@ -82,11 +88,19 @@ pub fn router(state: AppState) -> Router {
     if state.ops.is_some() {
         protected = protected.merge(scoped(Scope::OpsRead, ops::router()));
     }
+    if state.sources.is_some() {
+        protected = protected.merge(scoped(Scope::SourcesRead, sources::router()));
+    }
     protected = protected.merge(scoped(Scope::PairApprove, pair::approve_router()));
     let protected = protected.route_layer(from_fn_with_state(auth, authenticate));
 
+    let mut public = OpenApiRouter::new();
+    if state.sources.is_some() {
+        public = public.merge(sources::open_router());
+    }
     let (router, api) = OpenApiRouter::with_openapi(crate::openapi::Doc::openapi())
         .merge(health::router())
+        .merge(public)
         // Pairing's start and claim are the only routes without a key: a
         // device that has none yet is the whole point.
         .merge(pair::open_router())

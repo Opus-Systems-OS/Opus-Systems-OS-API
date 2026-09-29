@@ -23,6 +23,24 @@ enum Command {
         #[command(subcommand)]
         action: KeysAction,
     },
+    /// Connect a briefing source that needs consent (Google, WHOOP).
+    Oauth {
+        #[command(subcommand)]
+        action: OauthAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum OauthAction {
+    /// Print a consent URL (valid 15 minutes, once). Open it, approve, and
+    /// the provider sends the browser back to this API, which keeps the
+    /// tokens.
+    Start {
+        /// `google` (Gmail, Calendar, YouTube) or `whoop`.
+        provider: String,
+    },
+    /// Which providers are connected, and when their tokens last changed.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -42,6 +60,14 @@ enum KeysAction {
     Revoke {
         #[arg(long)]
         id: String,
+    },
+    /// Add scopes to an existing key (never keys:admin — only `create` mints that).
+    Grant {
+        #[arg(long)]
+        id: String,
+        /// Comma-separated, e.g. sources:read
+        #[arg(long)]
+        scopes: String,
     },
 }
 
@@ -66,8 +92,10 @@ async fn run() -> error::Result<()> {
     let cfg = Config::from_env()?;
     let db = db::Db::open(&cfg.database_path)?;
 
-    if let Some(Command::Keys { action }) = cli.command {
-        return keys_command(&db, action);
+    match cli.command {
+        Some(Command::Keys { action }) => return keys_command(&db, action),
+        Some(Command::Oauth { action }) => return oauth_command(&db, &cfg, action),
+        _ => {}
     }
 
     let control_plane = opus_api::upstream::control_plane::ControlPlane::new(
@@ -95,6 +123,8 @@ async fn run() -> error::Result<()> {
         tracing::info!("no service tokens — /v1/ops disabled");
         None
     };
+    let sources = opus_api::upstream::sources::Sources::new(cfg.sources.clone(), db.clone())?;
+    tracing::info!(sources = ?sources.configured(), "briefing sources configured");
     let app = opus_api::app(
         v1::AppState {
             db,
@@ -102,6 +132,7 @@ async fn run() -> error::Result<()> {
             limiter,
             voice: std::sync::Arc::new(voice),
             ops: std::sync::Arc::new(ops),
+            sources: std::sync::Arc::new(Some(sources)),
             pairings: Default::default(),
         },
         &cfg.allowed_origins,
@@ -156,11 +187,61 @@ fn keys_command(db: &db::Db, action: KeysAction) -> error::Result<()> {
                 );
             }
         }
+        KeysAction::Grant { id, scopes } => {
+            let add = Scope::parse_list(&scopes).map_err(error::Error::InvalidRequest)?;
+            if add.contains(&Scope::KeysAdmin) {
+                return Err(error::Error::InvalidRequest(
+                    "keys:admin is only granted by `keys create`".into(),
+                ));
+            }
+            match db.grant_scopes(&id, &add)? {
+                Some(now) => println!("{id}  scopes: {}", Scope::join(&now)),
+                None => return Err(error::Error::NotFound),
+            }
+        }
         KeysAction::Revoke { id } => {
             if db.revoke_key(&id)? {
                 println!("revoked {id}");
             } else {
                 return Err(error::Error::NotFound);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn oauth_command(db: &db::Db, cfg: &Config, action: OauthAction) -> error::Result<()> {
+    use opus_api::upstream::sources::oauth::{self, Provider};
+    match action {
+        OauthAction::Start { provider } => {
+            let p = Provider::parse(&provider).ok_or_else(|| {
+                error::Error::InvalidRequest("provider must be `google` or `whoop`".into())
+            })?;
+            let url = oauth::start(db, &cfg.sources, p)?;
+            println!("Open this within 15 minutes and approve:\n\n{url}\n");
+            println!(
+                "The redirect URI registered with {} must be exactly:\n  {}",
+                p.name(),
+                oauth::redirect_uri(&cfg.sources, p)
+            );
+        }
+        OauthAction::Status => {
+            for p in [Provider::Google, Provider::Whoop] {
+                let configured = p.client(&cfg.sources).is_some();
+                let token = db.oauth_token(p.as_str())?;
+                println!(
+                    "{:<7} client {:<14} {}",
+                    p.as_str(),
+                    if configured {
+                        "configured"
+                    } else {
+                        "NOT configured"
+                    },
+                    match token {
+                        Some(t) => format!("connected (tokens updated {})", t.updated_at),
+                        None => "not connected".into(),
+                    }
+                );
             }
         }
     }

@@ -51,6 +51,11 @@ pub enum Scope {
     /// `/v1/ops*` — read-only status of the stack's services.
     #[serde(rename = "ops:read")]
     OpsRead,
+    /// `/v1/sources*`, `/v1/briefing` — the day's weather, mail, calendar,
+    /// YouTube, WHOOP and Buffer queue. Personal data: grant it only to the
+    /// owner's own clients.
+    #[serde(rename = "sources:read")]
+    SourcesRead,
     /// `POST /v1/pair/{code}/approve` — mint a device key with the fixed
     /// device profile. Held by the Mac, never by a device.
     #[serde(rename = "pair:approve")]
@@ -61,7 +66,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Scope; 9] = [
+    pub const ALL: [Scope; 10] = [
         Scope::FleetRead,
         Scope::SessionsRead,
         Scope::SessionsWrite,
@@ -69,6 +74,7 @@ impl Scope {
         Scope::Inference,
         Scope::Voice,
         Scope::OpsRead,
+        Scope::SourcesRead,
         Scope::PairApprove,
         Scope::KeysAdmin,
     ];
@@ -82,6 +88,7 @@ impl Scope {
             Scope::Inference => "inference",
             Scope::Voice => "voice",
             Scope::OpsRead => "ops:read",
+            Scope::SourcesRead => "sources:read",
             Scope::PairApprove => "pair:approve",
             Scope::KeysAdmin => "keys:admin",
         }

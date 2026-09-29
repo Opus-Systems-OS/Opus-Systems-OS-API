@@ -261,7 +261,7 @@ impl Ops {
 
 /// Why a poll failed, as the hub row shows it. Never a token, never a URL
 /// with a query string.
-fn reason(e: &Error) -> String {
+pub(crate) fn reason(e: &Error) -> String {
     match e {
         Error::Upstream { message, .. } => message.clone(),
         Error::UpstreamTransport(t) => {

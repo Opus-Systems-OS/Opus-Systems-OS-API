@@ -58,6 +58,11 @@ pub struct Options {
     pub ops: bool,
     /// With `ops`: make the GitHub stub answer 401, to see a `down` row.
     pub github_rejects: bool,
+    /// Register `/v1/sources*`, `/v1/briefing` and the OAuth callback
+    /// against one stub playing Open-Meteo, Google, WHOOP and Buffer, with
+    /// every source configured. Google starts with an expired access token
+    /// (so the first read refreshes it); WHOOP is never connected.
+    pub sources: bool,
 }
 
 pub struct Harness {
@@ -188,6 +193,45 @@ pub async fn harness_with(opts: Options) -> Harness {
         None
     };
     let db = Db::in_memory().unwrap();
+    let sources = if opts.sources {
+        let sl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", sl.local_addr().unwrap());
+        let src_seen = seen.clone();
+        tokio::spawn(async move {
+            axum::serve(sl, sources_router(src_seen)).await.unwrap();
+        });
+        db.store_oauth_token("google", Some("g-refresh"), "g-expired", 0)
+            .unwrap();
+        let client = |id: &str| opus_api::config::OAuthClient {
+            client_id: id.into(),
+            client_secret: "client-secret".into(),
+        };
+        Some(
+            opus_api::upstream::sources::Sources::with_base_urls(
+                opus_api::config::SourcesConfig {
+                    google: Some(client("google-client")),
+                    whoop: Some(client("whoop-client")),
+                    buffer_api_key: Some("buffer-key".into()),
+                    ..Default::default()
+                },
+                db.clone(),
+                opus_api::upstream::sources::BaseUrls {
+                    open_meteo: base.clone(),
+                    gmail: base.clone(),
+                    calendar: base.clone(),
+                    youtube_analytics: base.clone(),
+                    youtube_data: base.clone(),
+                    google_token: format!("{base}/google/token"),
+                    whoop: base.clone(),
+                    whoop_token: format!("{base}/whoop/token"),
+                    buffer: format!("{base}/buffer"),
+                },
+            )
+            .unwrap(),
+        )
+    } else {
+        None
+    };
     let control_plane = ControlPlane::new(&format!("http://{cp_addr}"), CP_TOKEN).unwrap();
     let app = opus_api::app(
         AppState {
@@ -196,6 +240,7 @@ pub async fn harness_with(opts: Options) -> Harness {
             limiter: Arc::new(RateLimiter::new(opts.rate_limit_per_minute)),
             voice: Arc::new(voice),
             ops: Arc::new(ops),
+            sources: Arc::new(sources),
             pairings: Default::default(),
         },
         &opts.allowed_origins,
@@ -917,4 +962,124 @@ async fn fish_tts(
                 .unwrap()
         }
     }
+}
+
+// ---- the stub briefing sources ------------------------------------------
+
+/// Open-Meteo, Google (token, Gmail, Calendar, YouTube), WHOOP and Buffer in
+/// one server. Every request is recorded with its bearer so tests can see
+/// which token was used.
+fn sources_router(seen: Arc<Mutex<Seen>>) -> Router {
+    async fn rec(
+        State(seen): State<Arc<Mutex<Seen>>>,
+        req: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> Response {
+        let bearer = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| json!(v));
+        let path = req.uri().path().to_owned();
+        seen.lock()
+            .unwrap()
+            .requests
+            .push(("SRC".into(), path, bearer));
+        next.run(req).await
+    }
+    fn google_bearer(h: &HeaderMap) -> bool {
+        h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) == Some("Bearer g-fresh")
+    }
+    Router::new()
+        .route(
+            "/v1/forecast",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(q["temperature_unit"], "fahrenheit");
+                Json(json!({
+                    "current": {"temperature_2m": 83.6, "weather_code": 1, "wind_speed_10m": 6.0},
+                    "daily": {"temperature_2m_max": [88.0], "temperature_2m_min": [61.0], "precipitation_probability_max": [3]}
+                }))
+            }),
+        )
+        .route(
+            "/google/token",
+            post(|body: String| async move {
+                assert!(body.contains("grant_type=refresh_token"), "{body}");
+                assert!(body.contains("refresh_token=g-refresh"), "{body}");
+                Json(json!({"access_token": "g-fresh", "expires_in": 3599}))
+            }),
+        )
+        .route(
+            "/gmail/v1/users/me/labels/INBOX",
+            get(|h: HeaderMap| async move {
+                if !google_bearer(&h) {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(json!({"messagesUnread": 8})).into_response()
+            }),
+        )
+        .route(
+            "/gmail/v1/users/me/messages",
+            get(|| async { Json(json!({"messages": [{"id": "m1"}]})) }),
+        )
+        .route(
+            "/gmail/v1/users/me/messages/{id}",
+            get(|| async {
+                Json(json!({"internalDate": "1790000000000", "payload": {"headers": [
+                    {"name": "From", "value": "Acme <billing@acme.com>"}, {"name": "Subject", "value": "Invoice 12"}]}}))
+            }),
+        )
+        .route(
+            "/calendar/v3/calendars/primary/events",
+            get(|| async {
+                Json(json!({"items": [{"summary": "Standup", "start": {"dateTime": "2026-09-28T09:00:00-07:00"}, "end": {"dateTime": "2026-09-28T09:15:00-07:00"}}]}))
+            }),
+        )
+        .route(
+            "/v2/reports",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                // The window ending 2 days ago is "this week": more views.
+                let cutoff = (time::OffsetDateTime::now_utc().date() - time::Duration::days(5)).to_string();
+                let recent = q["endDate"] > cutoff;
+                Json(json!({"rows": [[if recent { 1680 } else { 1000 }, 12, 2]]}))
+            }),
+        )
+        .route(
+            "/whoop/token",
+            post(|body: String| async move {
+                assert!(body.contains("grant_type=authorization_code"), "{body}");
+                assert!(body.contains("code=whoop-code"), "{body}");
+                Json(json!({"access_token": "w-access", "refresh_token": "w-refresh", "expires_in": 3600}))
+            }),
+        )
+        .route(
+            "/developer/v2/recovery",
+            get(|| async { Json(json!({"records": [{"score": {"recovery_score": 72.0, "resting_heart_rate": 55.0, "hrv_rmssd_milli": 61.2}}]})) }),
+        )
+        .route(
+            "/developer/v2/activity/sleep",
+            get(|| async { Json(json!({"records": [{"score": {"sleep_performance_percentage": 91.0}}]})) }),
+        )
+        .route(
+            "/developer/v2/cycle",
+            get(|| async { Json(json!({"records": [{"score": {"strain": 9.84}}]})) }),
+        )
+        .route(
+            "/youtube/v3/channels",
+            get(|| async { Json(json!({"items": [{"snippet": {"title": "Opus"}, "statistics": {"subscriberCount": "2400"}}]})) }),
+        )
+        .route(
+            "/buffer",
+            post(|Json(body): Json<Value>| async move {
+                let q = body["query"].as_str().unwrap_or("");
+                if q.contains("organizations") {
+                    Json(json!({"data": {"account": {"organizations": [{"id": "org1", "name": "Opus"}]}}}))
+                } else {
+                    assert!(q.contains(r#"organizationId: "org1""#), "{q}");
+                    Json(json!({"data": {"posts": {"edges": [{"node": {"id": "p1", "text": "New short", "dueAt": "2026-09-29T17:00:00Z"}}]}}}))
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(seen.clone(), rec))
+        .with_state(seen)
 }

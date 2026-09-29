@@ -46,6 +46,7 @@ pub struct ErrorDetail {
         (name = "inference", description = "Local models on the rig (inference)"),
         (name = "voice", description = "Jarvis's voice — text to speech (voice)"),
         (name = "pair", description = "Pairing a new device: it shows a code, a client with pair:approve approves it, the device collects its key"),
+        (name = "sources", description = "The briefing — weather, Gmail, Calendar, YouTube, WHOOP, Buffer (sources:read); the OAuth callback is public"),
         (name = "ops", description = "The stack's services at a glance — GitHub, UptimeRobot, the droplet, Docker, Tailscale, Cloudflare (ops:read)"),
     )
 )]
