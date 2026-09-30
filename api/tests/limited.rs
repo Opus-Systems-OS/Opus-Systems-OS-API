@@ -143,8 +143,13 @@ async fn lists_show_only_its_agents() {
     assert_eq!(ids(&json["by_agent"], "agent_slug"), ["jarvis-powers"]);
     assert!(json["recent"].as_array().unwrap().is_empty(), "{json}");
 
-    let (status, _, json) = call(&h, Method::GET, "/v1/usage/export.csv", Some(&key), None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    let (status, _, csv) =
+        call_raw(&h, Method::GET, "/v1/usage/export.csv", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        String::from_utf8_lossy(&csv),
+        "session_id,agent_slug\nsesn_pw1,jarvis-powers\n"
+    );
 }
 
 #[tokio::test]

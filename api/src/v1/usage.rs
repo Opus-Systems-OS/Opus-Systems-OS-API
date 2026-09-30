@@ -106,16 +106,12 @@ pub async fn get(
     params(UsageQuery),
     responses(
         (status = 200, description = "RFC 4180 CSV, oldest first; header row `session_id,agent_slug,…,last_error`", content_type = "text/csv"),
-        (status = 403, description = "a key limited to some agents: the export is the whole fleet's", body = crate::openapi::ErrorBody),
     ))]
 pub async fn export_csv(
     State(state): State<AppState>,
     Extension(who): Extension<Principal>,
     Query(q): Query<UsageQuery>,
 ) -> Result<Response> {
-    if who.agents.is_some() {
-        return Err(Error::Forbidden("usage:read (every agent)"));
-    }
     let upstream = state
         .control_plane
         .open::<Value>(Method::GET, "/usage/export.csv", &q.pairs(), None)
@@ -127,12 +123,105 @@ pub async fn export_csv(
     if let Some(d) = disposition {
         res = res.header(header::CONTENT_DISPOSITION, d);
     }
-    res.body(Body::from_stream(upstream.bytes_stream()))
+    let body = if who.agents.is_some() {
+        // A key limited to some agents gets only their rows: the whole
+        // export is read (it is a few hundred rows) and filtered.
+        let csv = upstream
+            .text()
+            .await
+            .map_err(|e| Error::Config(format!("csv body: {e}")))?;
+        Body::from(retain_rows(&csv, |agent| who.may_reach(agent)))
+    } else {
+        Body::from_stream(upstream.bytes_stream())
+    };
+    res.body(body)
         .map_err(|e| Error::Config(format!("csv response: {e}")))
+}
+
+/// The CSV's header and the rows whose `agent_slug` passes `keep`. Records
+/// are RFC 4180: a quoted field (an error message) may hold commas, quotes
+/// and line breaks.
+fn retain_rows(csv: &str, keep: impl Fn(&str) -> bool) -> String {
+    let mut records = records(csv).into_iter();
+    let Some((header, names)) = records.next() else {
+        return String::new();
+    };
+    let Some(col) = names.iter().position(|n| n == "agent_slug") else {
+        return format!("{header}\n");
+    };
+    let mut out = format!("{header}\n");
+    for (raw, fields) in records {
+        if fields.get(col).is_some_and(|a| keep(a)) {
+            out.push_str(raw);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Each record's raw text (line break excluded) and its unquoted fields.
+fn records(csv: &str) -> Vec<(&str, Vec<String>)> {
+    let mut out = Vec::new();
+    let (mut start, mut quoted) = (0, false);
+    for (i, b) in csv.bytes().enumerate() {
+        match b {
+            b'"' => quoted = !quoted,
+            b'\n' if !quoted => {
+                let raw = csv[start..i].trim_end_matches('\r');
+                if !raw.is_empty() {
+                    out.push((raw, fields(raw)));
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let rest = csv[start..].trim_end_matches('\r');
+    if !rest.is_empty() {
+        out.push((rest, fields(rest)));
+    }
+    out
+}
+
+fn fields(record: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    let mut chars = record.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
 }
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(get))
         .routes(routes!(export_csv))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rows_are_kept_by_agent_even_with_quoted_line_breaks() {
+        let csv = "session_id,agent_slug,last_error\n\
+                   sesn_1,jarvis,\n\
+                   sesn_2,jarvis-powers,\"a, \"\"quoted\"\"\nerror\"\r\n\
+                   sesn_3,blueweb-client,x\n";
+        let kept = super::retain_rows(csv, |a| a == "jarvis-powers");
+        assert_eq!(
+            kept,
+            "session_id,agent_slug,last_error\nsesn_2,jarvis-powers,\"a, \"\"quoted\"\"\nerror\"\n"
+        );
+        assert_eq!(super::retain_rows("", |_| true), "");
+    }
 }

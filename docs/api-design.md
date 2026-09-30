@@ -61,8 +61,8 @@ key:
 - reads, streams, messages and interrupts only their sessions. A session
   of another agent is a `404`, as if it did not exist. Ownership is the
   session's `metadata.iron_fleet_agent`, looked up once and cached;
-- sees only those agents in `GET /v1/sessions`, `/v1/fleet/agents` and
-  `/v1/usage`, and cannot use `/v1/usage/export.csv` (the whole fleet's);
+- sees only those agents in `GET /v1/sessions`, `/v1/fleet/agents`,
+  `/v1/usage` and `/v1/usage/export.csv` (their rows only);
 - downloads a file only with `?session=<id>`, naming one of its sessions
   that lists the file.
 

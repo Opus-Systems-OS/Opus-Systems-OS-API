@@ -642,7 +642,9 @@ async fn usage_csv() -> Response {
             header::CONTENT_DISPOSITION,
             "attachment; filename=\"session_usage-x.csv\"",
         )
-        .body(Body::from("session_id,agent_slug\nsesn_1,jarvis\n"))
+        .body(Body::from(
+            "session_id,agent_slug\nsesn_1,jarvis\nsesn_pw1,jarvis-powers\n",
+        ))
         .unwrap()
 }
 
