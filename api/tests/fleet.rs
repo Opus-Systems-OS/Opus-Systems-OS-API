@@ -15,7 +15,7 @@ async fn agents_are_wrapped_in_data_and_need_fleet_read() {
     let (status, _, json) = call(&h, Method::GET, "/v1/fleet/agents", Some(&key), None).await;
     assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(json["data"][0]["slug"], "jarvis");
-    assert_eq!(json["data"].as_array().unwrap().len(), 2);
+    assert_eq!(json["data"].as_array().unwrap().len(), 3);
     let (method, path, _) = h.last_upstream();
     assert_eq!((method.as_str(), path.as_str()), ("GET", "/agents"));
 

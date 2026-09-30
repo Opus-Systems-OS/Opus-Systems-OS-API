@@ -77,6 +77,7 @@ pub async fn ws(
 ) -> Result<Response> {
     who.require(Scope::SessionsRead)?;
     super::sessions::valid_id(&id)?;
+    super::access::check_session(&state, &who, &id).await?;
     // Open the live stream before upgrading, so an unknown session is a
     // clean 404 envelope rather than a socket that closes at once.
     let deltas = q.deltas.unwrap_or(false);

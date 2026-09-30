@@ -25,6 +25,9 @@ pub enum Error {
     Unauthorized,
     #[error("missing scope `{0}`")]
     Forbidden(&'static str),
+    /// The key is limited to some agents, and this isn't one of them.
+    #[error("this key cannot reach agent `{0}`")]
+    AgentNotAllowed(String),
     #[error("not found")]
     NotFound,
     #[error("invalid request: {0}")]
@@ -66,7 +69,7 @@ impl Error {
         match self {
             Error::Config(_) => "internal",
             Error::Unauthorized => "unauthorized",
-            Error::Forbidden(_) => "forbidden",
+            Error::Forbidden(_) | Error::AgentNotAllowed(_) => "forbidden",
             Error::NotFound => "not_found",
             Error::InvalidRequest(_) => "invalid_request",
             Error::RateLimited { .. } => "rate_limited",
@@ -112,7 +115,7 @@ impl Error {
         match self {
             Error::Config(_) | Error::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Unauthorized => StatusCode::UNAUTHORIZED,
-            Error::Forbidden(_) => StatusCode::FORBIDDEN,
+            Error::Forbidden(_) | Error::AgentNotAllowed(_) => StatusCode::FORBIDDEN,
             Error::NotFound => StatusCode::NOT_FOUND,
             Error::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Error::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,

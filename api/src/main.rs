@@ -53,6 +53,10 @@ enum KeysAction {
         /// Comma-separated: fleet:read,sessions:read,sessions:write,usage:read,inference,keys:admin
         #[arg(long)]
         scopes: String,
+        /// Comma-separated agent slugs the key is limited to, e.g.
+        /// jarvis-powers. Omit for every agent.
+        #[arg(long)]
+        agents: Option<String>,
     },
     /// List keys (never shows secrets).
     List,
@@ -69,6 +73,28 @@ enum KeysAction {
         #[arg(long)]
         scopes: String,
     },
+    /// Set the agents a key is limited to (replaces the list), or `all`.
+    Agents {
+        #[arg(long)]
+        id: String,
+        /// Comma-separated agent slugs, e.g. jarvis-powers,jarvis-studio — or `all`.
+        #[arg(long)]
+        agents: String,
+    },
+}
+
+/// `--agents a,b` → the list; `all` → no limit.
+fn parse_agents(s: &str) -> error::Result<Option<Vec<String>>> {
+    if s.trim() == "all" {
+        return Ok(None);
+    }
+    let list: Vec<String> = s
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_owned)
+        .collect();
+    v1::keys::agent_list(&list).map(Some)
 }
 
 #[tokio::main]
@@ -134,6 +160,7 @@ async fn run() -> error::Result<()> {
             ops: std::sync::Arc::new(ops),
             sources: std::sync::Arc::new(Some(sources)),
             pairings: Default::default(),
+            session_agents: Default::default(),
         },
         &cfg.allowed_origins,
     );
@@ -161,22 +188,35 @@ async fn run() -> error::Result<()> {
 
 fn keys_command(db: &db::Db, action: KeysAction) -> error::Result<()> {
     match action {
-        KeysAction::Create { name, scopes } => {
+        KeysAction::Create {
+            name,
+            scopes,
+            agents,
+        } => {
             let scopes = Scope::parse_list(&scopes).map_err(error::Error::InvalidRequest)?;
-            let created = v1::keys::create_key(db, &name, &scopes)?;
+            let agents = agents.as_deref().map(parse_agents).transpose()?.flatten();
+            let created = v1::keys::create_key(db, &name, &scopes, agents.as_deref())?;
             println!("id:      {}", created.id);
             println!("name:    {}", created.name);
             println!("scopes:  {}", Scope::join(&created.scopes));
+            println!(
+                "agents:  {}",
+                created
+                    .agents
+                    .as_ref()
+                    .map_or("all".to_owned(), |a| a.join(","))
+            );
             println!("key:     {}", created.key);
             println!("(shown once — it is stored only as a hash)");
         }
         KeysAction::List => {
             for k in db.keys()? {
                 println!(
-                    "{}  {:<16} {:<60} created {}  last used {}  {}",
+                    "{}  {:<16} {:<60} agents {:<24} created {}  last used {}  {}",
                     k.id,
                     k.name,
                     Scope::join(&k.scopes),
+                    k.agents.as_ref().map_or("all".to_owned(), |a| a.join(",")),
                     k.created_at,
                     k.last_used_at.as_deref().unwrap_or("never"),
                     if k.revoked_at.is_some() {
@@ -198,6 +238,16 @@ fn keys_command(db: &db::Db, action: KeysAction) -> error::Result<()> {
                 Some(now) => println!("{id}  scopes: {}", Scope::join(&now)),
                 None => return Err(error::Error::NotFound),
             }
+        }
+        KeysAction::Agents { id, agents } => {
+            let agents = parse_agents(&agents)?;
+            if !db.set_key_agents(&id, agents.as_deref())? {
+                return Err(error::Error::NotFound);
+            }
+            println!(
+                "{id}  agents: {}",
+                agents.map_or("all".to_owned(), |a| a.join(","))
+            );
         }
         KeysAction::Revoke { id } => {
             if db.revoke_key(&id)? {

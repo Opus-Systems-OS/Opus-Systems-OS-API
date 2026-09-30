@@ -222,7 +222,7 @@ pub async fn approve(
             tracing::info!(key = %old.id, name = %name, "older key revoked by pairing");
         }
     }
-    let created = super::keys::create_key(&state.db, name, &DEVICE_PROFILE)?;
+    let created = super::keys::create_key(&state.db, name, &DEVICE_PROFILE, None)?;
     let mut map = state.pairings.inner.lock().unwrap();
     let Some(p) = map.get_mut(&code) else {
         return Err(Error::NotFound);

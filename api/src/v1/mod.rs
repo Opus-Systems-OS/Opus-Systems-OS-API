@@ -5,6 +5,7 @@
 //! its scope applied as a `route_layer`. Every route is registered through
 //! `utoipa_axum` so the spec and the router cannot drift apart.
 
+pub mod access;
 pub mod clients;
 pub mod files;
 pub mod fleet;
@@ -54,6 +55,8 @@ pub struct AppState {
     pub sources: Arc<Option<Sources>>,
     /// Pending device pairings (in memory, ten-minute codes).
     pub pairings: pair::Pairings,
+    /// Which agent each session belongs to, for keys limited to some agents.
+    pub session_agents: access::SessionAgents,
 }
 
 /// A sub-router whose every route needs `scope`.

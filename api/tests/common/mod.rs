@@ -77,7 +77,25 @@ pub struct Harness {
 
 impl Harness {
     pub fn key(&self, name: &str, scopes: &[Scope]) -> String {
-        create_key(&self.db, name, scopes).unwrap().key
+        create_key(&self.db, name, scopes, None).unwrap().key
+    }
+
+    /// A key limited to `agents`, with every session and fleet scope.
+    pub fn limited_key(&self, agents: &[&str]) -> String {
+        let agents: Vec<String> = agents.iter().map(|a| a.to_string()).collect();
+        create_key(
+            &self.db,
+            "web-powers",
+            &[
+                Scope::FleetRead,
+                Scope::SessionsRead,
+                Scope::SessionsWrite,
+                Scope::UsageRead,
+            ],
+            Some(&agents),
+        )
+        .unwrap()
+        .key
     }
 
     pub fn all_scopes_key(&self) -> String {
@@ -242,6 +260,7 @@ pub async fn harness_with(opts: Options) -> Harness {
             ops: Arc::new(ops),
             sources: Arc::new(sources),
             pairings: Default::default(),
+            session_agents: Default::default(),
         },
         &opts.allowed_origins,
     );
@@ -417,7 +436,8 @@ fn cp_error(status: u16, kind: &str, message: &str) -> Response {
 async fn agents() -> Json<Value> {
     Json(json!([
         {"slug":"jarvis","agent_id":"agent_1","agent_version":5,"max_list_cost_cents":"50","effort":"low","default_environment":"cloud-default","synced_at":"2026-09-18T00:00:00Z"},
-        {"slug":"gpu-compute","agent_id":"agent_2","agent_version":2,"max_list_cost_cents":"500","effort":"medium","default_environment":"rig-gpu","synced_at":"2026-09-18T00:00:00Z"}
+        {"slug":"gpu-compute","agent_id":"agent_2","agent_version":2,"max_list_cost_cents":"500","effort":"medium","default_environment":"rig-gpu","synced_at":"2026-09-18T00:00:00Z"},
+        {"slug":"jarvis-powers","agent_id":"agent_3","agent_version":1,"max_list_cost_cents":"200","effort":"medium","default_environment":"jarvis-lab","synced_at":"2026-09-30T00:00:00Z"}
     ]))
 }
 
@@ -425,7 +445,10 @@ async fn list_sessions(Query(q): Query<HashMap<String, String>>) -> Response {
     if q.get("agent_slug").map(String::as_str) == Some("nope") {
         return cp_error(404, "unknown_agent", "unknown agent slug `nope`");
     }
-    Json(json!({"data":[{"id":"sesn_1","status":"idle","console_url":"https://platform.claude.com/x/sesn_1"}],"next_page":null,"prev_page":null})).into_response()
+    Json(json!({"data":[
+        {"id":"sesn_1","status":"idle","metadata":{"iron_fleet_agent":"jarvis"},"console_url":"https://platform.claude.com/x/sesn_1"},
+        {"id":"sesn_pw1","status":"idle","metadata":{"iron_fleet_agent":"jarvis-powers"},"console_url":"https://platform.claude.com/x/sesn_pw1"}
+    ],"next_page":null,"prev_page":null})).into_response()
 }
 
 async fn create_session(Json(body): Json<Value>) -> Response {
@@ -464,7 +487,18 @@ async fn get_session(Path(id): Path<String>) -> Response {
     if id == "sesn_outage" {
         return cp_error(502, "upstream", "overloaded_error: Overloaded");
     }
-    Json(json!({"id": id, "status": "idle", "agent": {"system": "SECRET"}, "console_url": "https://platform.claude.com/x/sesn_1"})).into_response()
+    // `sesn_pw…` are jarvis-powers sessions; everything else is jarvis's.
+    let agent = if id.starts_with("sesn_pw") {
+        "jarvis-powers"
+    } else {
+        "jarvis"
+    };
+    Json(
+        json!({"id": id, "status": "idle", "agent": {"system": "SECRET"},
+                "metadata": {"iron_fleet_agent": agent},
+                "console_url": "https://platform.claude.com/x/sesn_1"}),
+    )
+    .into_response()
 }
 
 async fn events(Query(q): Query<HashMap<String, String>>) -> Json<Value> {
@@ -594,7 +628,8 @@ async fn usage(Query(q): Query<HashMap<String, String>>) -> Response {
         return cp_error(400, "invalid_request", "since: expected RFC 3339");
     }
     Json(json!({"window":{"since":q.get("since"),"until":q.get("until")},
-                "by_agent":[{"agent_slug":"jarvis","session_count":9,"total_list_cost_cents":82,"budget_reached_count":0}],
+                "by_agent":[{"agent_slug":"jarvis","session_count":9,"total_list_cost_cents":82,"budget_reached_count":0},
+                            {"agent_slug":"jarvis-powers","session_count":1,"total_list_cost_cents":4,"budget_reached_count":0}],
                 "recent":[{"session_id":"sesn_1","agent_slug":"jarvis","environment_slug":"cloud-default","list_cost_cents":"5","input_tokens":1,"output_tokens":2,"active_seconds":1.5,"budget_reached":false,"last_event_type":"session.status_idled","observed_at":"2026-09-18T00:00:00Z","last_error":null}]}))
         .into_response()
 }
@@ -607,7 +642,9 @@ async fn usage_csv() -> Response {
             header::CONTENT_DISPOSITION,
             "attachment; filename=\"session_usage-x.csv\"",
         )
-        .body(Body::from("session_id,agent_slug\nsesn_1,jarvis\n"))
+        .body(Body::from(
+            "session_id,agent_slug\nsesn_1,jarvis\nsesn_pw1,jarvis-powers\n",
+        ))
         .unwrap()
 }
 

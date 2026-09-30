@@ -9,6 +9,7 @@
 //! contract, versioned by the beta header the control plane sends, and
 //! re-typing them would only add a place for drift.
 
+use super::access;
 use super::AppState;
 use crate::auth::keys::Scope;
 use crate::auth::middleware::Principal;
@@ -236,6 +237,7 @@ pub async fn create(
     task_or_attachments(&req.task, &req.attachments)?;
     valid_id(&req.agent_slug)
         .map_err(|_| Error::InvalidRequest("agent_slug has unexpected characters".into()))?;
+    who.allow_agent(&req.agent_slug)?;
     validate_custom_tools(&req.tools)?;
     if let Some(sfx) = &req.system_suffix {
         if sfx.chars().count() > 4_000 {
@@ -317,7 +319,12 @@ pub async fn list(
     who.require(Scope::SessionsRead)?;
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(s) = &q.agent_slug {
+        who.allow_agent(s)?;
         query.push(("agent_slug", s.clone()));
+    } else if let Some([only]) = who.agents.as_deref() {
+        // A key limited to one agent asks for exactly that, so its pages
+        // come back full rather than filtered down below.
+        query.push(("agent_slug", only.clone()));
     }
     if let Some(l) = q.limit {
         query.push(("limit", l.to_string()));
@@ -329,7 +336,9 @@ pub async fn list(
         query.push(("order", o.clone()));
     }
     let q: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    Ok(Json(state.control_plane.get("/sessions", &q).await?))
+    let mut page = state.control_plane.get("/sessions", &q).await?;
+    access::retain_reachable(&who, &mut page, access::session_agent);
+    Ok(Json(page))
 }
 
 #[utoipa::path(get, path = "/sessions/{id}", tag = "sessions", security(("api_key" = ["sessions:read"])),
@@ -345,12 +354,12 @@ pub async fn get(
 ) -> Result<Json<Value>> {
     who.require(Scope::SessionsRead)?;
     valid_id(&id)?;
-    Ok(Json(
-        state
-            .control_plane
-            .get(&format!("/sessions/{id}"), &[])
-            .await?,
-    ))
+    let session = state
+        .control_plane
+        .get(&format!("/sessions/{id}"), &[])
+        .await?;
+    access::check_object(&state, &who, &id, &session)?;
+    Ok(Json(session))
 }
 
 // ---- events -------------------------------------------------------------
@@ -377,6 +386,7 @@ pub async fn events(
 ) -> Result<Json<Value>> {
     who.require(Scope::SessionsRead)?;
     valid_id(&id)?;
+    access::check_session(&state, &who, &id).await?;
     let mut query: Vec<(&str, String)> = Vec::new();
     if let Some(p) = &q.page {
         query.push(("page", p.clone()));
@@ -424,6 +434,7 @@ pub async fn send(
     valid_id(&id)?;
     let req = body_or_400(body)?;
     task_or_attachments(&req.task, &req.attachments)?;
+    access::check_session(&state, &who, &id).await?;
     let (_, out) = state
         .control_plane
         .post(&format!("/sessions/{id}/events"), &req)
@@ -446,6 +457,7 @@ pub async fn tool_results(
     valid_id(&id)?;
     let req = body_or_400(body)?;
     validate_tool_results(&req)?;
+    access::check_session(&state, &who, &id).await?;
     let (_, out) = state
         .control_plane
         .post(&format!("/sessions/{id}/tool-results"), &req)
@@ -476,6 +488,7 @@ pub async fn interrupt(
 ) -> Result<Json<Value>> {
     who.require(Scope::SessionsWrite)?;
     valid_id(&id)?;
+    access::check_session(&state, &who, &id).await?;
     let (_, out) = state
         .control_plane
         .post(&format!("/sessions/{id}/interrupt"), &Value::Null)
@@ -505,6 +518,7 @@ pub async fn stream(
 ) -> Result<Response> {
     who.require(Scope::SessionsRead)?;
     valid_id(&id)?;
+    access::check_session(&state, &who, &id).await?;
     let query: Vec<(&str, &str)> = q
         .event_deltas
         .as_deref()

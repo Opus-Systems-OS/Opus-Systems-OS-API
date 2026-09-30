@@ -143,6 +143,23 @@ async fn websocket_history_can_be_skipped() {
 }
 
 #[tokio::test]
+async fn websocket_refuses_a_limited_key_other_agents_sessions() {
+    let h = harness().await;
+    let key = h.limited_key(&["jarvis-powers"]);
+    let err = connect(&h.ws_url("/v1/sessions/sesn_live/ws"), Some(&key))
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("404"), "{err}");
+    let mut ws = connect(
+        &h.ws_url("/v1/sessions/sesn_pw1/ws?history=false"),
+        Some(&key),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next_json(&mut ws).await["type"], "hello");
+}
+
+#[tokio::test]
 async fn websocket_scopes_and_auth() {
     let h = harness().await;
 
