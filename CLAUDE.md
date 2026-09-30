@@ -35,7 +35,10 @@ it over the compose network.
 - **Scopes:** `fleet:read`, `sessions:read`, `sessions:write`, `usage:read`,
   `inference`, `voice`, `ops:read`, `pair:approve`, `keys:admin`. A device
   key never gets `keys:admin` or `pair:approve`; a paired device gets
-  exactly the fixed profile in `v1/pair.rs`.
+  exactly the fixed profile in `v1/pair.rs`. A key may also be **limited to
+  some agents** (`--agents`, `v1/access.rs`): it reaches only their
+  sessions, fleet rows and usage; anything else is 403 on create and 404
+  by id.
 - **Jarvis's voice is server config.** `/v1/voice/speak` proxies Fish Audio
   text-to-speech with the key and the voice id on the droplet; clients
   cannot pick a voice. `/v1/voice/transcribe` is the reverse (Fish

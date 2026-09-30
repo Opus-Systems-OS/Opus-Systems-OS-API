@@ -3,9 +3,10 @@
 //! audit trail, oldest first.
 
 use super::AppState;
+use crate::auth::middleware::Principal;
 use crate::error::{Error, Result};
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::Response;
 use axum::Json;
@@ -86,18 +87,35 @@ pub struct Usage {
     ))]
 pub async fn get(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Query(q): Query<UsageQuery>,
 ) -> Result<Json<Value>> {
-    Ok(Json(state.control_plane.get("/usage", &q.pairs()).await?))
+    let mut usage = state.control_plane.get("/usage", &q.pairs()).await?;
+    // A key limited to some agents sees only their spend.
+    if who.agents.is_some() {
+        for part in ["by_agent", "recent"] {
+            if let Some(rows) = usage.get_mut(part) {
+                super::access::retain_reachable(&who, rows, |r| r["agent_slug"].as_str());
+            }
+        }
+    }
+    Ok(Json(usage))
 }
 
 #[utoipa::path(get, path = "/usage/export.csv", tag = "usage", security(("api_key" = ["usage:read"])),
     params(UsageQuery),
-    responses((status = 200, description = "RFC 4180 CSV, oldest first; header row `session_id,agent_slug,…,last_error`", content_type = "text/csv")))]
+    responses(
+        (status = 200, description = "RFC 4180 CSV, oldest first; header row `session_id,agent_slug,…,last_error`", content_type = "text/csv"),
+        (status = 403, description = "a key limited to some agents: the export is the whole fleet's", body = crate::openapi::ErrorBody),
+    ))]
 pub async fn export_csv(
     State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
     Query(q): Query<UsageQuery>,
 ) -> Result<Response> {
+    if who.agents.is_some() {
+        return Err(Error::Forbidden("usage:read (every agent)"));
+    }
     let upstream = state
         .control_plane
         .open::<Value>(Method::GET, "/usage/export.csv", &q.pairs(), None)

@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   name           TEXT NOT NULL,      -- "mac", "quest-3", "jarvis-ios"
   secret_sha256  TEXT NOT NULL,      -- hex; keys are 256-bit random, no KDF needed
   scopes         TEXT NOT NULL,      -- comma-separated Scope names
+  agents         TEXT,               -- comma-separated agent slugs; NULL = every agent
   created_at     TEXT NOT NULL,
   last_used_at   TEXT,
   revoked_at     TEXT
@@ -57,6 +58,12 @@ pub struct KeyRow {
     #[serde(skip)]
     pub secret_sha256: String,
     pub scopes: Vec<Scope>,
+    /// The fleet agents (registry slugs) this key may reach: start, read,
+    /// stream and message their sessions, see them in the fleet and usage.
+    /// `None` is every agent — every key minted before this column, and
+    /// every device key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<String>>,
     pub created_at: String,
     pub last_used_at: Option<String>,
     pub revoked_at: Option<String>,
@@ -107,13 +114,14 @@ impl Db {
     pub fn insert_key(&self, row: &KeyRow) -> Result<()> {
         self.with(|c| {
             c.execute(
-                "INSERT INTO api_keys (id, name, secret_sha256, scopes, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO api_keys (id, name, secret_sha256, scopes, agents, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     row.id,
                     row.name,
                     row.secret_sha256,
                     Scope::join(&row.scopes),
+                    row.agents.as_ref().map(|a| a.join(",")),
                     row.created_at
                 ],
             )?;
@@ -124,7 +132,7 @@ impl Db {
     pub fn key(&self, id: &str) -> Result<Option<KeyRow>> {
         self.with(|c| {
             c.query_row(
-                "SELECT id, name, secret_sha256, scopes, created_at, last_used_at, revoked_at
+                "SELECT id, name, secret_sha256, scopes, created_at, last_used_at, revoked_at, agents
                  FROM api_keys WHERE id = ?1",
                 params![id],
                 read_key,
@@ -136,7 +144,7 @@ impl Db {
     pub fn keys(&self) -> Result<Vec<KeyRow>> {
         self.with(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, name, secret_sha256, scopes, created_at, last_used_at, revoked_at
+                "SELECT id, name, secret_sha256, scopes, created_at, last_used_at, revoked_at, agents
                  FROM api_keys ORDER BY created_at ASC, id ASC",
             )?;
             let rows = stmt.query_map([], read_key)?;
@@ -175,6 +183,18 @@ impl Db {
             )
         })?;
         Ok(Some(scopes))
+    }
+
+    /// Replace a live key's agent allowlist (`None` = every agent).
+    /// `Ok(false)` if there is no such live key.
+    pub fn set_key_agents(&self, id: &str, agents: Option<&[String]>) -> Result<bool> {
+        self.with(|c| {
+            let n = c.execute(
+                "UPDATE api_keys SET agents = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+                params![id, agents.map(|a| a.join(","))],
+            )?;
+            Ok(n == 1)
+        })
     }
 
     // ---- OAuth (briefing sources)
@@ -284,13 +304,16 @@ fn read_key(r: &rusqlite::Row<'_>) -> rusqlite::Result<KeyRow> {
         created_at: r.get(4)?,
         last_used_at: r.get(5)?,
         revoked_at: r.get(6)?,
+        agents: r
+            .get::<_, Option<String>>(7)?
+            .map(|a| a.split(',').map(str::to_owned).collect()),
     })
 }
 
 /// Columns added after a table first shipped: an `ALTER` guarded by
 /// `PRAGMA table_info`, idempotent, no-op on a fresh database.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    const ADDED: &[(&str, &str, &str)] = &[];
+    const ADDED: &[(&str, &str, &str)] = &[("api_keys", "agents", "TEXT")];
     for (table, column, ty) in ADDED {
         let present = conn
             .prepare(&format!("PRAGMA table_info({table})"))?
@@ -329,6 +352,7 @@ mod tests {
             name: "test".into(),
             secret_sha256: "ab".repeat(32),
             scopes: vec![Scope::FleetRead, Scope::SessionsWrite],
+            agents: None,
             created_at: now(),
             last_used_at: None,
             revoked_at: None,
@@ -418,6 +442,40 @@ mod tests {
             None,
             "already taken"
         );
+    }
+
+    #[test]
+    fn agent_allowlist_round_trips_and_resets() {
+        let db = Db::in_memory().unwrap();
+        db.insert_key(&row("k1")).unwrap();
+        assert_eq!(db.key("k1").unwrap().unwrap().agents, None);
+        let only = vec!["jarvis-powers".to_owned(), "jarvis-studio".to_owned()];
+        assert!(db.set_key_agents("k1", Some(&only)).unwrap());
+        assert_eq!(db.key("k1").unwrap().unwrap().agents, Some(only));
+        assert!(db.set_key_agents("k1", None).unwrap());
+        assert_eq!(db.key("k1").unwrap().unwrap().agents, None);
+        assert!(!db.set_key_agents("nope", None).unwrap());
+    }
+
+    #[test]
+    fn migrate_adds_agents_to_an_old_keys_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE api_keys (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+               secret_sha256 TEXT NOT NULL, scopes TEXT NOT NULL, created_at TEXT NOT NULL,
+               last_used_at TEXT, revoked_at TEXT);
+             INSERT INTO api_keys (id, name, secret_sha256, scopes, created_at)
+               VALUES ('old', 'mac', 'ab', 'fleet:read', '2026-09-01T00:00:00Z');",
+        )
+        .unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        migrate(&conn).unwrap();
+        let agents: Option<String> = conn
+            .query_row("SELECT agents FROM api_keys WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(agents, None, "an existing key keeps every agent");
     }
 
     #[test]

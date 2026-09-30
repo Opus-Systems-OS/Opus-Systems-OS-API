@@ -278,7 +278,8 @@ async fn clients_show_names_and_last_seen_never_key_details() {
     // mac: used once. quest-3: an old revoked key and a fresh unused one.
     // web: never used.
     let mac = h.key("mac", &[Scope::FleetRead]);
-    let old_quest = opus_api::v1::keys::create_key(&h.db, "quest-3", &[Scope::FleetRead]).unwrap();
+    let old_quest =
+        opus_api::v1::keys::create_key(&h.db, "quest-3", &[Scope::FleetRead], None).unwrap();
     let (status, _, _) = call(&h, Method::GET, "/v1/me", Some(&mac), None).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _, _) = call(&h, Method::GET, "/v1/me", Some(&old_quest.key), None).await;

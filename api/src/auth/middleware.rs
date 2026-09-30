@@ -17,9 +17,26 @@ pub struct Principal {
     pub key_id: String,
     pub name: String,
     pub scopes: ScopeSet,
+    /// The agents this key is limited to; `None` = every agent.
+    pub agents: Option<Vec<String>>,
 }
 
 impl Principal {
+    /// Whether this key may reach `slug`'s sessions.
+    pub fn may_reach(&self, slug: &str) -> bool {
+        self.agents
+            .as_ref()
+            .is_none_or(|list| list.iter().any(|a| a == slug))
+    }
+
+    pub fn allow_agent(&self, slug: &str) -> Result<(), Error> {
+        if self.may_reach(slug) {
+            Ok(())
+        } else {
+            Err(Error::AgentNotAllowed(slug.to_owned()))
+        }
+    }
+
     pub fn require(&self, scope: Scope) -> Result<(), Error> {
         if self.scopes.has(scope) {
             Ok(())
@@ -62,6 +79,7 @@ pub async fn authenticate(
         key_id: row.id.clone(),
         name: row.name.clone(),
         scopes: row.scope_set(),
+        agents: row.agents.clone(),
     });
     Ok(next.run(req).await)
 }

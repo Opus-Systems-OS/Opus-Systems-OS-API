@@ -38,7 +38,7 @@ async fn me_needs_a_valid_key() {
     let (status, _, _) = call(&h, Method::GET, "/v1/me", Some(&fake), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    let created = create_key(&h.db, "mac", &[Scope::FleetRead, Scope::SessionsRead]).unwrap();
+    let created = create_key(&h.db, "mac", &[Scope::FleetRead, Scope::SessionsRead], None).unwrap();
     let (status, _, json) = call(&h, Method::GET, "/v1/me", Some(&created.key), None).await;
     assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(json["key_id"], created.id);
@@ -63,8 +63,8 @@ async fn me_needs_a_valid_key() {
 #[tokio::test]
 async fn keys_admin_scope_gates_key_management() {
     let h = harness().await;
-    let device = create_key(&h.db, "quest-3", &[Scope::SessionsWrite]).unwrap();
-    let admin = create_key(&h.db, "ops", &[Scope::KeysAdmin]).unwrap();
+    let device = create_key(&h.db, "quest-3", &[Scope::SessionsWrite], None).unwrap();
+    let admin = create_key(&h.db, "ops", &[Scope::KeysAdmin], None).unwrap();
 
     let (status, _, json) = call(&h, Method::GET, "/v1/keys", Some(&device.key), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -139,7 +139,7 @@ async fn keys_admin_scope_gates_key_management() {
 #[tokio::test]
 async fn axum_rejections_wear_the_envelope_too() {
     let h = harness().await;
-    let admin = create_key(&h.db, "ops", &[Scope::KeysAdmin]).unwrap();
+    let admin = create_key(&h.db, "ops", &[Scope::KeysAdmin], None).unwrap();
 
     // Unknown route.
     let (status, _, json) = call(&h, Method::GET, "/v1/nothing", None, None).await;

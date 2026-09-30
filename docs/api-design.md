@@ -49,6 +49,27 @@ native Jarvis app — `sessions:read`, `sessions:write`, `voice`.
 There is no scope for creating agents or environments or changing budgets,
 because there are no such routes.
 
+### Keys limited to some agents
+
+A key can also be limited to some fleet agents: `opus-api keys create …
+--agents jarvis-powers`, or `"agents": [...]` on `POST /v1/keys`. Change it
+later with `opus-api keys agents --id <id> --agents a,b` (or `all`). Such a
+key:
+
+- starts sessions only for those agents (`403 forbidden` otherwise, before
+  anything reaches upstream);
+- reads, streams, messages and interrupts only their sessions. A session
+  of another agent is a `404`, as if it did not exist. Ownership is the
+  session's `metadata.iron_fleet_agent`, looked up once and cached;
+- sees only those agents in `GET /v1/sessions`, `/v1/fleet/agents` and
+  `/v1/usage`, and cannot use `/v1/usage/export.csv` (the whole fleet's);
+- downloads a file only with `?session=<id>`, naming one of its sessions
+  that lists the file.
+
+The web HUD's second profile (Mr. Powers) holds one of these, limited to
+`jarvis-powers`. Every key without a list, including every device key,
+reaches every agent as before.
+
 ## Errors
 
 Every non-2xx body:

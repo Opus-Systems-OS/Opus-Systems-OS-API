@@ -20,6 +20,11 @@ pub struct CreateKey {
     /// At least one. `keys:admin` cannot be granted over HTTP — only the
     /// CLI on the box mints admin keys.
     pub scopes: Vec<Scope>,
+    /// Limit the key to these fleet agents (registry slugs): it can start,
+    /// read and message only their sessions, and sees only them in the
+    /// fleet and usage. Omit for every agent.
+    #[serde(default)]
+    pub agents: Option<Vec<String>>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -27,6 +32,8 @@ pub struct CreatedKey {
     pub id: String,
     pub name: String,
     pub scopes: Vec<Scope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<String>>,
     pub created_at: String,
     /// Shown once. Store it; it cannot be retrieved.
     pub key: String,
@@ -37,9 +44,39 @@ pub struct KeyList {
     pub data: Vec<KeyRow>,
 }
 
+/// An agent allowlist, checked and normalised: registry slugs
+/// (`[a-z0-9-]`, 1–64), at least one, sorted, no duplicates.
+pub fn agent_list(agents: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = agents.iter().map(|a| a.trim().to_owned()).collect();
+    if out.is_empty() {
+        return Err(Error::InvalidRequest(
+            "agents must name at least one agent (omit it for every agent)".into(),
+        ));
+    }
+    for a in &out {
+        let ok = !a.is_empty()
+            && a.len() <= 64
+            && a.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !ok {
+            return Err(Error::InvalidRequest(format!(
+                "agent `{a}` is not a registry slug"
+            )));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 /// Validates and stores a new key; shared with the CLI, which is the only
 /// path allowed to include `keys:admin`.
-pub fn create_key(db: &db::Db, name: &str, scopes: &[Scope]) -> Result<CreatedKey> {
+pub fn create_key(
+    db: &db::Db,
+    name: &str,
+    scopes: &[Scope],
+    agents: Option<&[String]>,
+) -> Result<CreatedKey> {
     let name = name.trim();
     if name.is_empty() || name.len() > 64 {
         return Err(Error::InvalidRequest("name must be 1–64 characters".into()));
@@ -53,12 +90,14 @@ pub fn create_key(db: &db::Db, name: &str, scopes: &[Scope]) -> Result<CreatedKe
         s.dedup();
         s
     };
+    let agents = agents.map(agent_list).transpose()?;
     let minted = keys::mint();
     let row = KeyRow {
         id: minted.id.clone(),
         name: name.to_owned(),
         secret_sha256: minted.secret_sha256,
         scopes: scopes.clone(),
+        agents: agents.clone(),
         created_at: db::now(),
         last_used_at: None,
         revoked_at: None,
@@ -68,6 +107,7 @@ pub fn create_key(db: &db::Db, name: &str, scopes: &[Scope]) -> Result<CreatedKe
         id: row.id,
         name: row.name,
         scopes,
+        agents,
         created_at: row.created_at,
         key: minted.plaintext,
     })
@@ -89,8 +129,8 @@ pub async fn create(
             "keys:admin can only be minted with `opus-api keys create` on the host".into(),
         ));
     }
-    let created = create_key(&state.db, &body.name, &body.scopes)?;
-    tracing::info!(key = %created.id, name = %created.name, scopes = ?created.scopes, "key created");
+    let created = create_key(&state.db, &body.name, &body.scopes, body.agents.as_deref())?;
+    tracing::info!(key = %created.id, name = %created.name, scopes = ?created.scopes, agents = ?created.agents, "key created");
     Ok((StatusCode::CREATED, Json(created)))
 }
 

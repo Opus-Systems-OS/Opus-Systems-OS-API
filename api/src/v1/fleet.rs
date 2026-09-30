@@ -3,8 +3,9 @@
 //! never through this API.
 
 use super::AppState;
+use crate::auth::middleware::Principal;
 use crate::error::Result;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::Json;
 use serde::Serialize;
 use serde_json::Value;
@@ -32,8 +33,13 @@ pub struct AgentList {
 
 #[utoipa::path(get, path = "/fleet/agents", tag = "fleet", security(("api_key" = ["fleet:read"])),
     responses((status = 200, body = AgentList)))]
-pub async fn agents(State(state): State<AppState>) -> Result<Json<Value>> {
-    let agents = state.control_plane.get("/agents", &[]).await?;
+pub async fn agents(
+    State(state): State<AppState>,
+    Extension(who): Extension<Principal>,
+) -> Result<Json<Value>> {
+    let mut agents = state.control_plane.get("/agents", &[]).await?;
+    // A key limited to some agents sees only those.
+    super::access::retain_reachable(&who, &mut agents, |a| a["slug"].as_str());
     // The control plane answers a bare array; every list here is `{data}`.
     Ok(Json(serde_json::json!({ "data": agents })))
 }

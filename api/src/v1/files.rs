@@ -12,12 +12,12 @@ use crate::auth::keys::Scope;
 use crate::auth::middleware::Principal;
 use crate::error::{Error, Result};
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Extension, Path, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use reqwest::Method;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -88,6 +88,7 @@ pub async fn session_files(
 ) -> Result<Json<Value>> {
     who.require(Scope::SessionsRead)?;
     valid_id(&id)?;
+    super::access::check_session(&state, &who, &id).await?;
     Ok(Json(
         state
             .control_plane
@@ -96,22 +97,50 @@ pub async fn session_files(
     ))
 }
 
+#[derive(Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+pub struct ContentQuery {
+    /// The session the file came from. Required for a key limited to some
+    /// agents: the file must be one of that session's, and the session one
+    /// the key can reach.
+    pub session: Option<String>,
+}
+
 #[utoipa::path(get, path = "/files/{id}/content", tag = "files", security(("api_key" = ["sessions:read"])),
-    params(("id" = String, Path, description = "A `downloadable` file id from `/sessions/{id}/files`")),
+    params(("id" = String, Path, description = "A `downloadable` file id from `/sessions/{id}/files`"), ContentQuery),
     responses(
         (status = 200, description = "The file, with `Content-Disposition: attachment; filename=…`", content_type = "application/octet-stream"),
-        (status = 400, description = "an upload (only agent outputs download)", body = crate::openapi::ErrorBody),
+        (status = 400, description = "an upload (only agent outputs download), or a limited key without `session`", body = crate::openapi::ErrorBody),
+        (status = 404, description = "no such file, or not one a limited key can reach", body = crate::openapi::ErrorBody),
     ))]
 pub async fn content(
     State(state): State<AppState>,
     Extension(who): Extension<Principal>,
     Path(id): Path<String>,
+    Query(q): Query<ContentQuery>,
 ) -> Result<Response> {
     who.require(Scope::SessionsRead)?;
     if !valid_file_id(&id) {
         return Err(Error::InvalidRequest(
             "file id has unexpected characters".into(),
         ));
+    }
+    if who.agents.is_some() {
+        let session = q.session.as_deref().ok_or_else(|| {
+            Error::InvalidRequest("session is required for a key limited to some agents".into())
+        })?;
+        valid_id(session)?;
+        super::access::check_session(&state, &who, session).await?;
+        let files = state
+            .control_plane
+            .get(&format!("/sessions/{session}/files"), &[])
+            .await?;
+        let listed = files["data"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|f| f["id"].as_str() == Some(id.as_str())));
+        if !listed {
+            return Err(Error::NotFound);
+        }
     }
     let upstream = state
         .control_plane
