@@ -63,7 +63,8 @@ async fn full_round_trip_mints_a_device_key_and_hands_it_over_once() {
             "sessions:read",
             "sessions:write",
             "voice",
-            "ops:read"
+            "ops:read",
+            "intel:read"
         ],
         "the fixed device profile"
     );
@@ -98,7 +99,7 @@ async fn full_round_trip_mints_a_device_key_and_hands_it_over_once() {
     let (status, _, me) = call(&h, Method::GET, "/v1/me", Some(api_key), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(me["name"], "quest-3");
-    assert_eq!(me["scopes"].as_array().unwrap().len(), 5);
+    assert_eq!(me["scopes"].as_array().unwrap().len(), 6);
 
     let (status, _, json) = call(
         &h,

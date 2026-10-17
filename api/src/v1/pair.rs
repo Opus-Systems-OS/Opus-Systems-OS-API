@@ -33,12 +33,13 @@ pub const TTL: Duration = Duration::from_secs(600);
 const STARTS_PER_MINUTE: u32 = 10;
 
 /// What every paired device gets, and nothing else.
-pub const DEVICE_PROFILE: [Scope; 5] = [
+pub const DEVICE_PROFILE: [Scope; 6] = [
     Scope::FleetRead,
     Scope::SessionsRead,
     Scope::SessionsWrite,
     Scope::Voice,
     Scope::OpsRead,
+    Scope::IntelRead,
 ];
 
 #[derive(Clone)]

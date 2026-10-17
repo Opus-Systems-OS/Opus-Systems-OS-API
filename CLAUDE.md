@@ -33,7 +33,8 @@ it over the compose network.
   revocable. `keys:admin` is minted only by `opus-api keys create` on the
   host — never over HTTP.
 - **Scopes:** `fleet:read`, `sessions:read`, `sessions:write`, `usage:read`,
-  `inference`, `voice`, `ops:read`, `pair:approve`, `keys:admin`. A device
+  `inference`, `voice`, `ops:read`, `intel:read`, `sources:read`,
+  `pair:approve`, `keys:admin`. A device
   key never gets `keys:admin` or `pair:approve`; a paired device gets
   exactly the fixed profile in `v1/pair.rs`. A key may also be **limited to
   some agents** (`--agents`, `v1/access.rs`): it reaches only their

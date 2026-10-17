@@ -160,6 +160,18 @@ music tools). Keys re-minted with `ops:read`: `mac` `7d26eb91`, `quest-3`
 confirmed on the new one). The GitHub token is a classic `ghp_` — swap
 for a fine-grained read-only one when convenient.
 
+## Intel — 2026-10-17
+
+`GET /v1/intel/feed` and `/v1/intel/search?q=` (scope `intel:read`, in
+the device profile): the web HUD's Intel feeds moved behind the API so
+the Quest can have the globe too — 16 fixed sources (news wires, USGS,
+EONET, CAL FIRE, InciWeb, NWS), 5-min feed cache, 10-min search cache,
+and placement + categories done here (the gazetteer and classifier ported
+from jarvis-web's `hud/intel/geo.ts` / `model.ts`). First live fetch from
+the Mac: 15/16 sources ok (NWS a transient 500), 436 items, 325 placed.
+SDK: `IntelFeedAsync`, `IntelSearchAsync`. Existing headset keys lack
+the scope; re-pairing mints it.
+
 ## What's next
 
 The API's build order is complete. Open threads, none blocking:

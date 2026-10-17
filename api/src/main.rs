@@ -159,6 +159,7 @@ async fn run() -> error::Result<()> {
             voice: std::sync::Arc::new(voice),
             ops: std::sync::Arc::new(ops),
             sources: std::sync::Arc::new(Some(sources)),
+            intel: opus_api::upstream::intel::Intel::new()?,
             pairings: Default::default(),
             session_agents: Default::default(),
         },
