@@ -51,6 +51,10 @@ pub enum Scope {
     /// `/v1/ops*` — read-only status of the stack's services.
     #[serde(rename = "ops:read")]
     OpsRead,
+    /// `/v1/intel/*` — public news wires and hazard feeds, placed and
+    /// categorized.
+    #[serde(rename = "intel:read")]
+    IntelRead,
     /// `/v1/sources*`, `/v1/briefing` — the day's weather, mail, calendar,
     /// YouTube, WHOOP and Buffer queue. Personal data: grant it only to the
     /// owner's own clients.
@@ -66,7 +70,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Scope; 10] = [
+    pub const ALL: [Scope; 11] = [
         Scope::FleetRead,
         Scope::SessionsRead,
         Scope::SessionsWrite,
@@ -74,6 +78,7 @@ impl Scope {
         Scope::Inference,
         Scope::Voice,
         Scope::OpsRead,
+        Scope::IntelRead,
         Scope::SourcesRead,
         Scope::PairApprove,
         Scope::KeysAdmin,
@@ -88,6 +93,7 @@ impl Scope {
             Scope::Inference => "inference",
             Scope::Voice => "voice",
             Scope::OpsRead => "ops:read",
+            Scope::IntelRead => "intel:read",
             Scope::SourcesRead => "sources:read",
             Scope::PairApprove => "pair:approve",
             Scope::KeysAdmin => "keys:admin",

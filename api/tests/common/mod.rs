@@ -69,6 +69,8 @@ pub struct Harness {
     pub app: axum::Router,
     pub db: Db,
     pub seen: Arc<Mutex<Seen>>,
+    /// Paths (with query) the intel stub was asked for.
+    pub intel_hits: Arc<Mutex<Vec<String>>>,
     /// The app served on a real port, for WebSocket tests.
     pub addr: std::net::SocketAddr,
     rig: Arc<Mutex<Option<(u16, Value)>>>,
@@ -211,6 +213,15 @@ pub async fn harness_with(opts: Options) -> Harness {
         None
     };
     let db = Db::in_memory().unwrap();
+    // Intel always points at a stub: tests never reach the real wires.
+    let il = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let intel_base = format!("http://{}", il.local_addr().unwrap());
+    let intel_hits = Arc::new(Mutex::new(Vec::new()));
+    let hits = intel_hits.clone();
+    tokio::spawn(async move {
+        axum::serve(il, intel_router(hits)).await.unwrap();
+    });
+    let intel = intel_stub(&intel_base);
     let sources = if opts.sources {
         let sl = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", sl.local_addr().unwrap());
@@ -259,6 +270,7 @@ pub async fn harness_with(opts: Options) -> Harness {
             voice: Arc::new(voice),
             ops: Arc::new(ops),
             sources: Arc::new(sources),
+            intel,
             pairings: Default::default(),
             session_agents: Default::default(),
         },
@@ -274,6 +286,7 @@ pub async fn harness_with(opts: Options) -> Harness {
         app,
         db,
         seen,
+        intel_hits,
         addr,
         rig,
         live,
@@ -1119,4 +1132,91 @@ fn sources_router(seen: Arc<Mutex<Seen>>) -> Router {
         )
         .layer(axum::middleware::from_fn_with_state(seen.clone(), rec))
         .with_state(seen)
+}
+
+// ---- the stub intel feeds -------------------------------------------------
+
+fn intel_stub(base: &str) -> opus_api::upstream::intel::Intel {
+    use opus_api::upstream::intel::{Format, Intel, IntelUrls, Source};
+    let s = |name, path: &str, format| Source {
+        name,
+        url: format!("{base}{path}"),
+        format,
+    };
+    Intel::with_urls(IntelUrls {
+        sources: vec![
+            s("Google News · Top", "/google/top", Format::Rss),
+            s("NPR", "/npr", Format::Rss),
+            s("USGS quakes", "/usgs", Format::Usgs),
+            s("NWS alerts", "/nws", Format::Nws),
+            s("CBS News", "/cbs", Format::Rss),
+        ],
+        news_search: format!("{base}/google/search"),
+        wikipedia: format!("{base}/wiki"),
+    })
+    .unwrap()
+}
+
+/// Google News, NPR, USGS and NWS as canned bodies; CBS answers 500.
+fn intel_router(hits: Arc<Mutex<Vec<String>>>) -> Router {
+    async fn rec(
+        State(hits): State<Arc<Mutex<Vec<String>>>>,
+        req: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> Response {
+        let uri = req.uri().to_string();
+        hits.lock().unwrap().push(uri);
+        next.run(req).await
+    }
+    const GOOGLE: &str = r#"<?xml version="1.0"?><rss><channel>
+      <item><title>Wildfire near Malibu forces evacuations - Los Angeles Times</title><link>https://news.google.com/a</link>
+        <pubDate>Fri, 16 Oct 2026 22:35:00 GMT</pubDate></item>
+      <item><title>Senate passes funding bill - NPR</title><link>https://news.google.com/b</link>
+        <pubDate>Fri, 16 Oct 2026 21:00:00 GMT</pubDate></item>
+    </channel></rss>"#;
+    const NPR: &str = r#"<?xml version="1.0"?><rss><channel>
+      <item><title>Senate passes funding bill</title><link>https://npr.org/b</link><description>&lt;p&gt;Lawmakers vote.&lt;/p&gt;</description>
+        <pubDate>Fri, 16 Oct 2026 20:00:00 GMT</pubDate></item>
+      <item><title>A quiet day at the zoo</title><link>javascript:alert(1)</link>
+        <pubDate>Fri, 16 Oct 2026 19:00:00 GMT</pubDate></item>
+    </channel></rss>"#;
+    Router::new()
+        .route("/google/top", get(|| async { GOOGLE }))
+        .route("/npr", get(|| async { NPR }))
+        .route(
+            "/usgs",
+            get(|| async {
+                Json(json!({"features": [{"id": "ci1", "properties": {"mag": 4.5, "place": "5 km N of Ridgecrest, CA",
+                    "title": "M 4.5 - 5 km N of Ridgecrest, CA", "time": 1792188000000_i64, "url": "https://earthquake.usgs.gov/x"},
+                    "geometry": {"coordinates": [-117.6, 35.7, 8.0]}}]}))
+            }),
+        )
+        .route(
+            "/nws",
+            get(|| async {
+                Json(json!({"features": [{"geometry": null, "properties": {"id": "n1", "event": "Flood Warning",
+                    "headline": "Flood Warning issued", "severity": "Severe", "areaDesc": "Linn", "sent": "2026-10-16T18:00:00-05:00",
+                    "geocode": {"UGC": ["IAZ040"]}}}]}))
+            }),
+        )
+        .route("/cbs", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
+        .route(
+            "/google/search",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                format!(
+                    r#"<rss><channel><item><title>{} visits Kyiv - Reuters</title><link>https://news.google.com/s</link></item></channel></rss>"#,
+                    q["q"]
+                )
+            }),
+        )
+        .route(
+            "/wiki",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(q["gsrsearch"], "Jane Doe");
+                Json(json!({"query": {"pages": [
+                    {"pageid": 7, "index": 1, "title": "Jane Doe", "description": "Placeholder name", "extract": "Jane Doe is a name."}
+                ]}}))
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(hits, rec))
 }

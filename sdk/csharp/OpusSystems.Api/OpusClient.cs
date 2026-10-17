@@ -198,6 +198,18 @@ namespace OpusSystems.Api
         /// <summary>One service with its <c>detail</c> document: github, uptimerobot, droplet, docker, tailscale, cloudflare.</summary>
         public Task<JObject> OpsAsync(string service, CancellationToken ct = default) => GetAsync<JObject>("ops/" + Uri.EscapeDataString(service), ct);
 
+        // ---- intel (intel:read) ---------------------------------------------
+
+        /// <summary>
+        /// News wires and hazard feeds, categorized and placed (cached 5 min on the API):
+        /// <c>{generated_at, items:[{id,kind,title,summary,source,url,published?,lat?,lon?,place?,place_level?,region?,severity?,category,feed}], sources:[{name,ok,count,error?}]}</c>.
+        /// </summary>
+        public Task<JObject> IntelFeedAsync(CancellationToken ct = default) => GetAsync<JObject>("intel/feed", ct);
+
+        /// <summary>News coverage of a name, place or event (1–80 characters) and the Wikipedia entries that match it: <c>{query, articles:[item], entries:[{title,description,extract,url}], errors?}</c>.</summary>
+        public Task<JObject> IntelSearchAsync(string query, CancellationToken ct = default) =>
+            GetAsync<JObject>("intel/search?q=" + Uri.EscapeDataString(query ?? ""), ct);
+
         // ---- plumbing ----------------------------------------------------
 
         private static string Id(string id)

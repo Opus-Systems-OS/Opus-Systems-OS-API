@@ -11,6 +11,7 @@ pub mod files;
 pub mod fleet;
 pub mod health;
 pub mod inference;
+pub mod intel;
 pub mod keys;
 pub mod me;
 pub mod ops;
@@ -29,6 +30,7 @@ use crate::db::Db;
 use crate::error::Error;
 use crate::upstream::control_plane::ControlPlane;
 use crate::upstream::fish_audio::FishAudio;
+use crate::upstream::intel::Intel;
 use crate::upstream::ops::Ops;
 use crate::upstream::sources::Sources;
 use axum::middleware::from_fn_with_state;
@@ -53,6 +55,8 @@ pub struct AppState {
     /// key); `None` leaves `/v1/sources*`, `/v1/briefing` and the OAuth
     /// callback unregistered.
     pub sources: Arc<Option<Sources>>,
+    /// News and hazard feeds for `/v1/intel/*` (public sources, no config).
+    pub intel: Intel,
     /// Pending device pairings (in memory, ten-minute codes).
     pub pairings: pair::Pairings,
     /// Which agent each session belongs to, for keys limited to some agents.
@@ -79,6 +83,7 @@ pub fn router(state: AppState) -> Router {
         ))
         .merge(scoped(Scope::UsageRead, usage::router()))
         .merge(scoped(Scope::OpsRead, clients::router()))
+        .merge(scoped(Scope::IntelRead, intel::router()))
         .merge(scoped(Scope::Inference, inference::router()))
         // sessions: GET and POST share paths with different scopes, so the
         // check is per handler (see sessions.rs).

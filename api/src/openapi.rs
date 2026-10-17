@@ -47,6 +47,7 @@ pub struct ErrorDetail {
         (name = "voice", description = "Jarvis's voice — text to speech (voice)"),
         (name = "pair", description = "Pairing a new device: it shows a code, a client with pair:approve approves it, the device collects its key"),
         (name = "sources", description = "The briefing — weather, Gmail, Calendar, YouTube, WHOOP, Buffer (sources:read); the OAuth callback is public"),
+        (name = "intel", description = "Public news wires and hazard feeds — quakes, fires, storms, alerts — categorized and placed for a globe; search over news and Wikipedia (intel:read)"),
         (name = "ops", description = "The stack's services at a glance — GitHub, UptimeRobot, the droplet, Docker, Tailscale, Cloudflare (ops:read)"),
     )
 )]

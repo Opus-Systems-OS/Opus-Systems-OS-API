@@ -39,11 +39,13 @@ failures — no header, malformed, unknown id, wrong secret, revoked — answer
 | `inference` | `/v1/inference/*` |
 | `voice` | `/v1/voice/*` — Jarvis's voice (text to speech) |
 | `ops:read` | `/v1/ops*` — the stack's services at a glance, read-only |
+| `intel:read` | `/v1/intel/*` — public news wires and hazard feeds, categorized and placed |
 | `pair:approve` | `POST /v1/pair/{code}/approve` — approve a new device (held by the Mac, never a device) |
 | `keys:admin` | `/v1/keys*` |
 
 Suggested grants: desktop apps — everything but `keys:admin`; a headset —
-`sessions:read`, `sessions:write`, `fleet:read`, `voice`, `ops:read`; the
+`sessions:read`, `sessions:write`, `fleet:read`, `voice`, `ops:read`,
+`intel:read`; the
 native Jarvis app — `sessions:read`, `sessions:write`, `voice`.
 
 There is no scope for creating agents or environments or changing budgets,
@@ -144,6 +146,8 @@ Stage 2 (live):
 | `GET /v1/pair/{code}?token=` | none | `202` until approved; then `{api_key, key_id, name, wit_token?, speaker?}` once |
 | `POST /v1/pair/{code}/approve` | `pair:approve` | `{name, wit_token?, speaker?}` → mints the device key (fixed profile), revokes older keys of that name |
 | `GET /v1/ops/{service}` | `ops:read` | The same row with `detail` — `github`, `uptimerobot`, `droplet`, `docker`, `tailscale`, `cloudflare` |
+| `GET /v1/intel/feed` | `intel:read` | `{generated_at, items, sources: [{name, ok, count, error?}]}` — every source at once, cached 5 min; a failing source is a row, never a failed feed. An item is `{id, kind: news|quake|fire|storm|volcano|alert, title, summary, source, url, published?, lat?, lon?, place?, place_level?, region?, severity?, category, feed}` |
+| `GET /v1/intel/search?q=` | `intel:read` | `q` 1–80 chars → `{query, articles: [item], entries: [{title, description, extract, url}], errors?}` — Google News coverage + Wikipedia entries, cached 10 min per query |
 | `GET /v1/sources` | `sources:read` | `{sources: [{id, name, state, headline, checked_at}]}`: weather, calendar, gmail, youtube, whoop, buffer (the configured ones) |
 | `GET /v1/sources/{source}` | `sources:read` | The same row with `detail` |
 | `GET /v1/briefing?since=` | `sources:read` | `{generated_at, since, sources: [rows with detail]}`; Gmail's detail gains `new_since` |
@@ -169,12 +173,31 @@ types the code into a client that holds `pair:approve` (the Mac's Jarvis
 app), which calls `approve` with the device's name and whatever extras the
 device needs — the Wit.ai token for dictation, the Mac's `host:port` for
 music. Approval mints a key with the **fixed device profile**
-(`fleet:read, sessions:read, sessions:write, voice, ops:read` — the body
+(`fleet:read, sessions:read, sessions:write, voice, ops:read, intel:read` — the body
 cannot ask for scopes, and `keys:admin` is unreachable this way), revokes
 any older key of the same name (so re-pairing rotates), and parks the
 bundle under the code. The device polls `GET /v1/pair/{code}?token=…` and
 collects it exactly once; a code without its token collects nothing.
 Codes live ten minutes in memory.
+
+### Intel
+
+Open-source news and hazards for a globe, read from a fixed list and
+never from a client-supplied URL (a search only fills the query of Google
+News and Wikipedia): Google News (top, U.S., world, incidents), NPR, BBC
+×2, CBS, ABC, Guardian US, Al Jazeera, USGS (M2.5+, a day), NASA EONET,
+CAL FIRE, InciWeb, NWS (severe and extreme). Text is plain (markup
+stripped), links are http(s) or empty, times RFC 3339 UTC, news is
+deduplicated across wires by headline. Every item has a `category`
+(`fire`, `violence`, `conflict`, `unrest`, `disaster`, `weather`,
+`politics`, `health`, `economy`, `other` — a hazard's kind decides, news
+by headline words), and a place where one can be found: hazards keep the
+feed's coordinates (`place_level` 4); a state-only NWS alert sits on its
+state, spread a little; news is placed by an offline gazetteer reading the
+headline (city 3 › state 2 › "Senate"/"Congress" 1.5 › country 1 ›
+demonym 0.5; a newspaper's name is not a place, "Michael Jordan" is not
+Jordan). The same lists as the web HUD's Intel tab. Search and briefs
+cover news and public-figure entries only.
 
 ### Ops
 
