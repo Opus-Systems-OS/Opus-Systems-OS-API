@@ -36,6 +36,7 @@ use crate::upstream::sources::Sources;
 use axum::middleware::from_fn_with_state;
 use axum::Router;
 use std::sync::Arc;
+use std::time::Duration;
 use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_redoc::{Redoc, Servable};
@@ -61,6 +62,43 @@ pub struct AppState {
     pub pairings: pair::Pairings,
     /// Which agent each session belongs to, for keys limited to some agents.
     pub session_agents: access::SessionAgents,
+    pub limits: Limits,
+}
+
+/// What bounds a caller besides the per-key `limiter`. `Default` is the
+/// service's; tests shrink the WebSocket timings.
+#[derive(Clone)]
+pub struct Limits {
+    /// Failed attempts per peer address — a bad key, a wrong pairing code
+    /// or token, a bad OAuth callback. Spent only on failure; an address
+    /// that is out is refused before its key is looked up.
+    pub auth_failures: Arc<RateLimiter>,
+    /// Per key, for the routes that cost money or the GPU: `voice/speak`,
+    /// `inference/chat`, `intel/search`.
+    pub costly: Arc<RateLimiter>,
+    /// A WebSocket with no frame either way for this long is closed.
+    pub ws_idle: Duration,
+    /// How often a WebSocket re-reads its key, to close on revocation.
+    pub ws_recheck: Duration,
+}
+
+pub const AUTH_FAILURES_PER_MINUTE: u32 = 10;
+pub const COSTLY_PER_MINUTE: u32 = 30;
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            auth_failures: Arc::new(RateLimiter::new(AUTH_FAILURES_PER_MINUTE)),
+            costly: Arc::new(RateLimiter::new(COSTLY_PER_MINUTE)),
+            ws_idle: Duration::from_secs(300),
+            ws_recheck: Duration::from_secs(60),
+        }
+    }
+}
+
+/// Routes that also spend from the per-key `costly` bucket.
+fn costly(limiter: Arc<RateLimiter>, router: OpenApiRouter<AppState>) -> OpenApiRouter<AppState> {
+    router.route_layer(from_fn_with_state(limiter, crate::auth::middleware::costly))
 }
 
 /// A sub-router whose every route needs `scope`.
@@ -72,7 +110,9 @@ pub fn router(state: AppState) -> Router {
     let auth = Arc::new(AuthState {
         db: state.db.clone(),
         limiter: state.limiter.clone(),
+        failures: state.limits.auth_failures.clone(),
     });
+    let costly = state.limits.costly.clone();
 
     let mut protected = OpenApiRouter::new()
         .merge(me::router())
@@ -83,15 +123,15 @@ pub fn router(state: AppState) -> Router {
         ))
         .merge(scoped(Scope::UsageRead, usage::router()))
         .merge(scoped(Scope::OpsRead, clients::router()))
-        .merge(scoped(Scope::IntelRead, intel::router()))
-        .merge(scoped(Scope::Inference, inference::router()))
+        .merge(scoped(Scope::IntelRead, intel::router(costly.clone())))
+        .merge(scoped(Scope::Inference, inference::router(costly.clone())))
         // sessions: GET and POST share paths with different scopes, so the
         // check is per handler (see sessions.rs).
         .merge(sessions::router())
         .merge(files::router())
         .merge(ws::router());
     if state.voice.is_some() {
-        protected = protected.merge(scoped(Scope::Voice, voice::router()));
+        protected = protected.merge(scoped(Scope::Voice, voice::router(costly)));
     }
     if state.ops.is_some() {
         protected = protected.merge(scoped(Scope::OpsRead, ops::router()));

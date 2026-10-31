@@ -195,6 +195,8 @@ impl Intel {
             ))
             .connect_timeout(Duration::from_secs(5))
             .timeout(FETCH_TIMEOUT)
+            // Public feeds do move (http → https, a new path); not far.
+            .redirect(reqwest::redirect::Policy::limited(5))
             .build()?;
         Ok(Intel {
             http,

@@ -263,6 +263,10 @@ async fn upstream_errors_map_to_our_vocabulary() {
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_envelope(&json, "upstream");
+    assert_eq!(
+        json["error"]["message"], "the upstream service failed",
+        "Anthropic's own text is not passed on: {json}"
+    );
 
     // invalid_request 400 → invalid_request 400
     let (status, _, json) = call(&h, Method::GET, "/v1/usage?since=bad", Some(&key), None).await;
@@ -416,6 +420,10 @@ async fn inference_models_chat_embeddings_and_rig_offline() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_envelope(&json, "rig_offline");
     assert_eq!(headers["retry-after"], "5");
+    assert_eq!(
+        json["error"]["message"], "the GPU rig is offline",
+        "the rig's address stays in the log"
+    );
 }
 
 #[tokio::test]
@@ -937,6 +945,7 @@ async fn files_upload_attach_and_hand_back() {
         headers[header::CONTENT_DISPOSITION],
         "attachment; filename=\"summary.md\""
     );
+    assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
     assert_eq!(&bytes[..], b"# hi\n");
     let (status, _, _) = call_raw(
         &h,

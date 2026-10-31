@@ -4,7 +4,7 @@
 //! `Error` so the body is the standard envelope.
 
 use crate::auth::keys::{self, Scope, ScopeSet};
-use crate::auth::rate_limit::RateLimiter;
+use crate::auth::rate_limit::{peer, RateLimiter};
 use crate::db::Db;
 use crate::error::Error;
 use axum::extract::{Request, State};
@@ -49,6 +49,9 @@ impl Principal {
 pub struct AuthState {
     pub db: Db,
     pub limiter: Arc<RateLimiter>,
+    /// Failed authentications per peer address; an address over it is
+    /// refused before its key is even looked up.
+    pub failures: Arc<RateLimiter>,
 }
 
 pub async fn authenticate(
@@ -56,6 +59,10 @@ pub async fn authenticate(
     mut req: Request,
     next: Next,
 ) -> Result<Response, Error> {
+    let who = peer(req.headers());
+    if let Err(retry_after_secs) = auth.failures.blocked(&who) {
+        return Err(Error::RateLimited { retry_after_secs });
+    }
     let presented = req
         .headers()
         .get(http::header::AUTHORIZATION)
@@ -63,14 +70,21 @@ pub async fn authenticate(
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
         .unwrap_or("");
-    let (id, secret) = keys::parse(presented).ok_or(Error::Unauthorized)?;
-    let row = auth.db.key(id)?.ok_or(Error::Unauthorized)?;
-    if row.revoked_at.is_some() || !keys::verify(secret, &row.secret_sha256) {
+    let row = match keys::parse(presented) {
+        Some((id, secret)) => auth
+            .db
+            .key(id)?
+            .filter(|row| row.revoked_at.is_none() && keys::verify(secret, &row.secret_sha256)),
+        None => None,
+    };
+    let Some(row) = row else {
+        let _ = auth.failures.check(&who); // spend one failure
         return Err(Error::Unauthorized);
-    }
+    };
     if let Err(retry_after_secs) = auth.limiter.check(&row.id) {
         return Err(Error::RateLimited { retry_after_secs });
     }
+    let id = row.id.as_str();
     if let Err(e) = auth.db.touch_key(id) {
         tracing::warn!(key = id, error = %e, "could not record last_used_at");
     }
@@ -81,6 +95,23 @@ pub async fn authenticate(
         scopes: row.scope_set(),
         agents: row.agents.clone(),
     });
+    Ok(next.run(req).await)
+}
+
+/// A second, smaller per-key bucket for routes that cost money or the GPU:
+/// `route_layer(from_fn_with_state(limiter, costly))`, inside `authenticate`.
+pub async fn costly(
+    State(limiter): State<Arc<RateLimiter>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, Error> {
+    let principal = req
+        .extensions()
+        .get::<Principal>()
+        .ok_or(Error::Unauthorized)?;
+    limiter
+        .check(&principal.key_id)
+        .map_err(|retry_after_secs| Error::RateLimited { retry_after_secs })?;
     Ok(next.run(req).await)
 }
 

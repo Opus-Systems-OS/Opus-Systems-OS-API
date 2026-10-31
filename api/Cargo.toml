@@ -17,8 +17,8 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8", features = ["macros", "ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-tower = "0.5"
-tower-http = { version = "0.7", features = ["trace", "cors"] }
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "timeout"] }
 http = "1"
 reqwest = { version = "0.13", features = ["json", "query", "form", "stream", "multipart"] }
 http-body-util = "0.1"
@@ -42,6 +42,7 @@ time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 utoipa-redoc = { version = "6", features = ["axum"] }
+chacha20poly1305 = "0.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

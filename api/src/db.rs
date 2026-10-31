@@ -4,7 +4,9 @@
 //! Iron-Fleet's control plane so the two are operated the same way.
 
 use crate::auth::keys::{Scope, ScopeSet};
-use crate::error::Result;
+use crate::error::{Error, Result};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -49,7 +51,41 @@ pub struct OAuthTokenRow {
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// Seals the OAuth tokens at rest; `None` stores them in plaintext.
+    token_key: Option<Arc<XChaCha20Poly1305>>,
 }
+
+/// The 32-byte key that encrypts OAuth tokens at rest (`TOKEN_KEY_FILE`).
+#[derive(Clone)]
+pub struct TokenKey([u8; 32]);
+
+impl TokenKey {
+    /// 64 hex characters (`openssl rand -hex 32`) or 32 raw bytes.
+    pub fn parse(file: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(file).map(str::trim).unwrap_or("");
+        let mut key = [0u8; 32];
+        if text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            for (i, byte) in key.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()?;
+            }
+        } else if file.len() == 32 {
+            key.copy_from_slice(file);
+        } else {
+            return None;
+        }
+        Some(TokenKey(key))
+    }
+}
+
+impl std::fmt::Debug for TokenKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenKey(<redacted>)")
+    }
+}
+
+/// Prefix of a sealed token: `v1:` + hex(24-byte nonce || ciphertext).
+/// Anything without it is a row written before encryption.
+const SEALED_V1: &str = "v1:";
 
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct KeyRow {
@@ -91,9 +127,18 @@ impl Db {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+        owner_only(path)?;
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
+            token_key: None,
         })
+    }
+
+    /// Encrypt OAuth tokens from here on; plaintext rows are re-sealed the
+    /// first time they are read.
+    pub fn with_token_key(mut self, key: &TokenKey) -> Self {
+        self.token_key = Some(Arc::new(XChaCha20Poly1305::new(&key.0.into())));
+        self
     }
 
     pub fn in_memory() -> Result<Self> {
@@ -103,6 +148,7 @@ impl Db {
         migrate(&conn)?;
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
+            token_key: None,
         })
     }
 
@@ -234,8 +280,10 @@ impl Db {
         })
     }
 
+    /// A provider's tokens, decrypted. A row from before encryption is
+    /// read as plaintext and sealed in place when a key is set.
     pub fn oauth_token(&self, provider: &str) -> Result<Option<OAuthTokenRow>> {
-        self.with(|c| {
+        let stored = self.with(|c| {
             c.query_row(
                 "SELECT refresh_token, access_token, expires_at, updated_at FROM oauth_tokens WHERE provider = ?1",
                 params![provider],
@@ -249,7 +297,40 @@ impl Db {
                 },
             )
             .optional()
-        })
+        })?;
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        let legacy = !stored.refresh_token.starts_with(SEALED_V1)
+            || stored
+                .access_token
+                .as_deref()
+                .is_some_and(|a| !a.starts_with(SEALED_V1));
+        let row = OAuthTokenRow {
+            refresh_token: self.open_token(provider, "refresh", &stored.refresh_token)?,
+            access_token: stored
+                .access_token
+                .as_deref()
+                .map(|a| self.open_token(provider, "access", a))
+                .transpose()?,
+            ..stored
+        };
+        if legacy && self.token_key.is_some() {
+            let refresh = self.seal_token(provider, "refresh", &row.refresh_token)?;
+            let access = row
+                .access_token
+                .as_deref()
+                .map(|a| self.seal_token(provider, "access", a))
+                .transpose()?;
+            self.with(|c| {
+                c.execute(
+                    "UPDATE oauth_tokens SET refresh_token = ?2, access_token = ?3 WHERE provider = ?1",
+                    params![provider, refresh, access],
+                )
+            })?;
+            tracing::info!(provider, "plaintext oauth tokens encrypted at rest");
+        }
+        Ok(Some(row))
     }
 
     /// Save an access token, and the refresh token when one was issued
@@ -261,6 +342,10 @@ impl Db {
         access: &str,
         expires_at: i64,
     ) -> Result<()> {
+        let access = self.seal_token(provider, "access", access)?;
+        let refresh = refresh
+            .map(|r| self.seal_token(provider, "refresh", r))
+            .transpose()?;
         self.with(|c| {
             match refresh {
                 Some(r) => c.execute(
@@ -278,6 +363,65 @@ impl Db {
             };
             Ok(())
         })
+    }
+
+    /// `v1:` + hex(nonce || ciphertext). The provider and column are the
+    /// associated data, so a sealed value only opens in the cell it came from.
+    fn seal_token(&self, provider: &str, column: &str, plain: &str) -> Result<String> {
+        let Some(cipher) = &self.token_key else {
+            return Ok(plain.to_owned());
+        };
+        let mut nonce = [0u8; 24];
+        getrandom::fill(&mut nonce).expect("os randomness");
+        let aad = format!("{provider}/{column}");
+        let sealed = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: plain.as_bytes(),
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| Error::Config("could not encrypt an oauth token".into()))?;
+        let hex: String = nonce
+            .iter()
+            .chain(&sealed)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Ok(format!("{SEALED_V1}{hex}"))
+    }
+
+    fn open_token(&self, provider: &str, column: &str, stored: &str) -> Result<String> {
+        let Some(hex) = stored.strip_prefix(SEALED_V1) else {
+            return Ok(stored.to_owned());
+        };
+        let cipher = self.token_key.as_ref().ok_or_else(|| {
+            Error::Config(format!(
+                "{provider}'s oauth tokens are encrypted and TOKEN_KEY_FILE is not set"
+            ))
+        })?;
+        let bad = || {
+            Error::Config(format!(
+                "{provider}'s stored {column} token does not decrypt"
+            ))
+        };
+        let bytes: Option<Vec<u8>> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+            .collect();
+        let bytes = bytes.filter(|b| b.len() > 24).ok_or_else(bad)?;
+        let (nonce, sealed) = bytes.split_at(24);
+        let aad = format!("{provider}/{column}");
+        let plain = cipher
+            .decrypt(
+                XNonce::from_slice(nonce),
+                Payload {
+                    msg: sealed,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| bad())?;
+        String::from_utf8(plain).map_err(|_| bad())
     }
 
     /// Best-effort, coarse: one write per key per minute at most, so a busy
@@ -308,6 +452,23 @@ fn read_key(r: &rusqlite::Row<'_>) -> rusqlite::Result<KeyRow> {
             .get::<_, Option<String>>(7)?
             .map(|a| a.split(',').map(str::to_owned).collect()),
     })
+}
+
+/// The database and its WAL files readable by this user only: they hold
+/// key hashes and OAuth tokens.
+fn owner_only(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for suffix in ["", "-wal", "-shm"] {
+            let file = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+            if file.exists() {
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| Error::Config(format!("chmod {}: {e}", file.display())))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Columns added after a table first shipped: an `ALTER` guarded by
@@ -430,6 +591,102 @@ mod tests {
             "r2"
         );
         assert!(db.oauth_token("google").unwrap().is_none());
+    }
+
+    fn token_key() -> TokenKey {
+        TokenKey::parse("ab".repeat(32).as_bytes()).unwrap()
+    }
+
+    fn raw_tokens(db: &Db, provider: &str) -> (String, Option<String>) {
+        db.with(|c| {
+            c.query_row(
+                "SELECT refresh_token, access_token FROM oauth_tokens WHERE provider = ?1",
+                params![provider],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn oauth_tokens_round_trip_encrypted() {
+        let db = Db::in_memory().unwrap().with_token_key(&token_key());
+        db.store_oauth_token("google", Some("1//refresh"), "ya29.access", 100)
+            .unwrap();
+        let (refresh, access) = raw_tokens(&db, "google");
+        let access = access.unwrap();
+        assert!(refresh.starts_with("v1:") && access.starts_with("v1:"));
+        assert!(!refresh.contains("refresh") && !access.contains("ya29"));
+        let t = db.oauth_token("google").unwrap().unwrap();
+        assert_eq!(t.refresh_token, "1//refresh");
+        assert_eq!(t.access_token.as_deref(), Some("ya29.access"));
+
+        // Another key does not open it.
+        let other = db
+            .clone()
+            .with_token_key(&TokenKey::parse(&[7u8; 32]).unwrap());
+        assert!(other.oauth_token("google").is_err());
+        // Nor does the same value moved into another provider's row.
+        db.with(|c| {
+            c.execute(
+                "INSERT INTO oauth_tokens (provider, refresh_token, updated_at) VALUES ('whoop', ?1, 'x')",
+                params![refresh],
+            )
+        })
+        .unwrap();
+        assert!(db.oauth_token("whoop").is_err());
+        // Without a key, a sealed row is an error, not garbage.
+        let keyless = Db {
+            token_key: None,
+            ..db.clone()
+        };
+        assert!(keyless.oauth_token("google").is_err());
+    }
+
+    #[test]
+    fn plaintext_tokens_are_sealed_on_first_read() {
+        let plain = Db::in_memory().unwrap();
+        plain
+            .store_oauth_token("whoop", Some("r-plain"), "a-plain", 100)
+            .unwrap();
+        assert_eq!(
+            raw_tokens(&plain, "whoop").0,
+            "r-plain",
+            "no key: as before"
+        );
+        let db = plain.with_token_key(&token_key());
+        let t = db.oauth_token("whoop").unwrap().unwrap();
+        assert_eq!(
+            (t.refresh_token.as_str(), t.access_token.as_deref()),
+            ("r-plain", Some("a-plain"))
+        );
+        let (refresh, access) = raw_tokens(&db, "whoop");
+        assert!(refresh.starts_with("v1:"), "{refresh}");
+        assert!(access.unwrap().starts_with("v1:"));
+        let again = db.oauth_token("whoop").unwrap().unwrap();
+        assert_eq!(again.refresh_token, "r-plain");
+        assert_eq!(again.access_token.as_deref(), Some("a-plain"));
+    }
+
+    #[test]
+    fn token_key_is_hex_or_raw() {
+        assert!(TokenKey::parse(format!("{}\n", "0f".repeat(32)).as_bytes()).is_some());
+        assert!(TokenKey::parse(&[9u8; 32]).is_some());
+        assert!(TokenKey::parse(b"short").is_none());
+        assert!(TokenKey::parse("zz".repeat(32).as_bytes()).is_none());
+        assert_eq!(format!("{:?}", token_key()), "TokenKey(<redacted>)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_makes_the_file_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("opus-api-db-{}", std::process::id()));
+        let path = dir.join("t.db");
+        Db::open(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

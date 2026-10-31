@@ -196,9 +196,12 @@ async fn token_request(s: &Sources, p: Provider, form: &[(&str, &str)]) -> Resul
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
-        let why = body["error_description"]
+        tracing::warn!(provider = p.as_str(), status = status.as_u16(), body = %body, "oauth token request rejected");
+        // Only the RFC 6749 error code (`invalid_grant`, …) goes back; the
+        // provider's free-text description stays in the log.
+        let why = body["error"]
             .as_str()
-            .or_else(|| body["error"].as_str())
+            .filter(|e| e.len() <= 32 && e.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
             .unwrap_or("rejected");
         // invalid_grant = consent revoked or the refresh token is dead.
         let hint = if body["error"] == "invalid_grant" {

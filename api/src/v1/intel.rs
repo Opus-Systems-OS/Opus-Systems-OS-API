@@ -3,6 +3,7 @@
 //! allow) placed. Read-only, public sources only, behind `intel:read`.
 
 use super::AppState;
+use crate::auth::rate_limit::RateLimiter;
 use crate::error::{Error, Result};
 use crate::upstream::intel::{clean_query, Feed, SearchResult, MAX_QUERY};
 use axum::extract::{Query, State};
@@ -10,6 +11,7 @@ use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::Deserialize;
+use std::sync::Arc;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -50,8 +52,11 @@ pub async fn search(
     Ok(json(state.intel.search(&q).await?))
 }
 
-pub fn router() -> OpenApiRouter<AppState> {
+pub fn router(costly: Arc<RateLimiter>) -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(feed))
-        .routes(routes!(search))
+        .merge(super::costly(
+            costly,
+            OpenApiRouter::new().routes(routes!(search)),
+        ))
 }

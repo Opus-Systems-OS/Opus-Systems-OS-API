@@ -1,0 +1,23 @@
+# Weekly update PRs; each goes through the same CI (tests + cargo audit)
+# before anyone merges it.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  # The base images' pinned digests.
+  - package-ecosystem: docker
+    directory: /api
+    schedule:
+      interval: weekly

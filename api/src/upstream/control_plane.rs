@@ -33,10 +33,14 @@ impl ControlPlane {
             .user_agent(ua)
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
+            // The control plane never redirects; following one would carry
+            // the bearer somewhere else.
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let stream = reqwest::Client::builder()
             .user_agent(ua)
             .connect_timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(ControlPlane {
             json,
