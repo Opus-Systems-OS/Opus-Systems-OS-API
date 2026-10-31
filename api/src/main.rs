@@ -117,6 +117,13 @@ async fn run() -> error::Result<()> {
     let cli = Cli::parse();
     let cfg = Config::from_env()?;
     let db = db::Db::open(&cfg.database_path)?;
+    let db = match &cfg.token_key {
+        Some(key) => db.with_token_key(key),
+        None => {
+            tracing::warn!("no TOKEN_KEY_FILE — OAuth tokens are stored unencrypted");
+            db
+        }
+    };
 
     match cli.command {
         Some(Command::Keys { action }) => return keys_command(&db, action),
@@ -162,6 +169,7 @@ async fn run() -> error::Result<()> {
             intel: opus_api::upstream::intel::Intel::new()?,
             pairings: Default::default(),
             session_agents: Default::default(),
+            limits: Default::default(),
         },
         &cfg.allowed_origins,
     );

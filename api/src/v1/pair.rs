@@ -5,16 +5,18 @@
 //! human types the code into a client that already holds a key with
 //! `pair:approve` (the Mac's Jarvis app). Approval mints a key with the
 //! *fixed device profile* — never more, never `keys:admin` — revokes older
-//! keys of the same name, and parks the key with the extras the device
-//! needs (Wit token, the Mac's address) under the code. The device polls
-//! with its token and collects the bundle exactly once.
+//! device keys of the same name, and parks the key with the extras the
+//! device needs (Wit token, the Mac's address) under the code. The device
+//! polls with its token and collects the bundle exactly once.
 //!
-//! Codes live ten minutes, in memory (one API instance). A guessed code
-//! yields nothing without the token; approving needs a real key.
+//! Codes live ten minutes, in memory (one API instance), at most
+//! `MAX_PENDING` at a time: a flood of starts cannot fill the code space so
+//! that a mistyped code lands on a stranger's device. A guessed code yields
+//! nothing without the token; approving needs a real key.
 
 use super::AppState;
 use crate::auth::keys::Scope;
-use crate::auth::rate_limit::RateLimiter;
+use crate::auth::rate_limit::{peer, RateLimiter};
 use crate::error::{Error, Result};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
@@ -31,6 +33,8 @@ use utoipa_axum::routes;
 pub const TTL: Duration = Duration::from_secs(600);
 /// Pairings a single address may start per minute.
 const STARTS_PER_MINUTE: u32 = 10;
+/// Codes pending at once, across every address.
+pub const MAX_PENDING: usize = 20;
 
 /// What every paired device gets, and nothing else.
 pub const DEVICE_PROFILE: [Scope; 6] = [
@@ -117,18 +121,6 @@ pub struct Claim {
     pub token: String,
 }
 
-/// The caller's address for the start limiter: what the proxy says, else
-/// "unknown" (all direct callers share one bucket — only tests).
-fn peer(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(|v| v.trim().to_owned())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
 fn random_code() -> String {
     let mut b = [0u8; 4];
     getrandom::fill(&mut b).expect("os randomness");
@@ -144,7 +136,7 @@ fn random_token() -> String {
 #[utoipa::path(post, path = "/pair", tag = "pair",
     responses(
         (status = 201, body = Started, description = "Show `code` to the human; keep `token`"),
-        (status = 429, body = crate::openapi::ErrorBody),
+        (status = 429, body = crate::openapi::ErrorBody, description = "This address started too many, or too many codes are pending"),
     ))]
 pub async fn start(
     State(state): State<AppState>,
@@ -158,6 +150,17 @@ pub async fn start(
         .map_err(|retry_after_secs| Error::RateLimited { retry_after_secs })?;
     let mut map = state.pairings.inner.lock().unwrap();
     Pairings::sweep(&mut map);
+    if map.len() >= MAX_PENDING {
+        let oldest_left = map
+            .values()
+            .map(|p| TTL.saturating_sub(p.started.elapsed()))
+            .min()
+            .unwrap_or(TTL);
+        tracing::warn!(from = %who, "pairing refused: {MAX_PENDING} codes pending");
+        return Err(Error::RateLimited {
+            retry_after_secs: oldest_left.as_secs().max(1) as u32,
+        });
+    }
     let mut code = random_code();
     while map.contains_key(&code) {
         code = random_code();
@@ -216,9 +219,14 @@ pub async fn approve(
             _ => return Err(Error::NotFound),
         }
     }
-    // Rotation is built in: the name identifies the device.
+    // Rotation is built in: the name identifies the device. Only keys a
+    // pairing could have minted (device-profile scopes or fewer, every
+    // agent) rotate out; a same-name key holding more — the Mac's own, a
+    // web profile's — is not this device's and stays.
     for old in state.db.keys()? {
-        if old.name == name && old.revoked_at.is_none() {
+        let device_key =
+            old.agents.is_none() && old.scopes.iter().all(|s| DEVICE_PROFILE.contains(s));
+        if old.name == name && old.revoked_at.is_none() && device_key {
             state.db.revoke_key(&old.id)?;
             tracing::info!(key = %old.id, name = %name, "older key revoked by pairing");
         }
@@ -249,24 +257,39 @@ pub async fn approve(
         (status = 200, body = Bundle, description = "Approved: the key and extras, once"),
         (status = 202, description = "Not approved yet — poll again"),
         (status = 404, body = crate::openapi::ErrorBody, description = "Unknown or expired code, or wrong token"),
+        (status = 429, body = crate::openapi::ErrorBody, description = "Too many failed claims from this address"),
     ))]
 pub async fn claim(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(code): Path<String>,
     Query(q): Query<Claim>,
 ) -> Result<Response> {
+    let who = peer(&headers);
+    let failures = &state.limits.auth_failures;
+    failures
+        .blocked(&who)
+        .map_err(|retry_after_secs| Error::RateLimited { retry_after_secs })?;
+    let res = collect(&state, &code, &q.token);
+    if matches!(res, Err(Error::NotFound)) {
+        let _ = failures.check(&who); // spend one failure
+    }
+    res
+}
+
+fn collect(state: &AppState, code: &str, token: &str) -> Result<Response> {
     let mut map = state.pairings.inner.lock().unwrap();
     Pairings::sweep(&mut map);
-    let Some(p) = map.get(&code) else {
+    let Some(p) = map.get(code) else {
         return Err(Error::NotFound);
     };
-    if !constant_eq(&p.token, &q.token) {
+    if !constant_eq(&p.token, token) {
         return Err(Error::NotFound);
     }
     if p.bundle.is_none() {
         return Ok(StatusCode::ACCEPTED.into_response());
     }
-    let p = map.remove(&code).expect("present");
+    let p = map.remove(code).expect("present");
     tracing::info!(code = %code, "pairing claimed");
     Ok(Json(p.bundle.expect("approved")).into_response())
 }

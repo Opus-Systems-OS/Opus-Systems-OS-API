@@ -13,7 +13,7 @@ use crate::auth::middleware::Principal;
 use crate::error::{Error, Result};
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use reqwest::Method;
@@ -146,14 +146,32 @@ pub async fn content(
         .control_plane
         .open::<Value>(Method::GET, &format!("/files/{id}/content"), &[], None)
         .await?;
-    let mut res = Response::builder().status(StatusCode::OK);
-    for name in [header::CONTENT_TYPE, header::CONTENT_DISPOSITION] {
-        if let Some(v) = upstream.headers().get(&name) {
-            res = res.header(name, v);
-        }
+    let mut res = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(
+            header::CONTENT_DISPOSITION,
+            attachment(upstream.headers().get(header::CONTENT_DISPOSITION)),
+        );
+    if let Some(v) = upstream.headers().get(header::CONTENT_TYPE) {
+        res = res.header(header::CONTENT_TYPE, v);
     }
     res.body(Body::from_stream(upstream.bytes_stream()))
         .map_err(|e| Error::Config(format!("file response: {e}")))
+}
+
+/// Always a download, never rendered by a browser that has our origin:
+/// upstream's disposition type is replaced, its parameters (the filename)
+/// kept.
+fn attachment(upstream: Option<&HeaderValue>) -> HeaderValue {
+    let params = upstream
+        .and_then(|v| {
+            let b = v.as_bytes();
+            b.iter().position(|&c| c == b';').map(|i| &b[i..])
+        })
+        .unwrap_or_default();
+    HeaderValue::from_bytes(&[b"attachment", params].concat())
+        .unwrap_or(HeaderValue::from_static("attachment"))
 }
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -164,4 +182,24 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(session_files))
         .routes(routes!(content))
         .merge(upload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downloads_are_always_attachments() {
+        let v = |s: &'static str| HeaderValue::from_static(s);
+        assert_eq!(
+            attachment(Some(&v("inline; filename=\"x.html\""))),
+            "attachment; filename=\"x.html\""
+        );
+        assert_eq!(
+            attachment(Some(&v("attachment; filename=\"a.md\""))),
+            "attachment; filename=\"a.md\""
+        );
+        assert_eq!(attachment(Some(&v("inline"))), "attachment");
+        assert_eq!(attachment(None), "attachment");
+    }
 }

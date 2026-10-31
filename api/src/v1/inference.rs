@@ -5,6 +5,7 @@
 //! Claude — that is the whole failover story.
 
 use super::AppState;
+use crate::auth::rate_limit::RateLimiter;
 use crate::error::{Error, Result};
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -14,6 +15,7 @@ use axum::response::Response;
 use axum::Json;
 use reqwest::Method;
 use serde_json::Value;
+use std::sync::Arc;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -117,10 +119,13 @@ pub async fn embeddings(
     Ok(Json(out))
 }
 
-pub fn router() -> OpenApiRouter<AppState> {
+pub fn router(costly: Arc<RateLimiter>) -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(models))
-        .routes(routes!(chat))
+        .merge(super::costly(
+            costly,
+            OpenApiRouter::new().routes(routes!(chat)),
+        ))
         .routes(routes!(embeddings))
         .route_layer(DefaultBodyLimit::max(1 << 20))
 }

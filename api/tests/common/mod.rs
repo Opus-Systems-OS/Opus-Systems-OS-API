@@ -20,7 +20,7 @@ use opus_api::upstream::control_plane::ControlPlane;
 use opus_api::upstream::fish_audio::FishAudio;
 use opus_api::upstream::ops::{BaseUrls, Ops};
 use opus_api::v1::keys::create_key;
-use opus_api::v1::AppState;
+use opus_api::v1::{AppState, Limits};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -63,6 +63,11 @@ pub struct Options {
     /// every source configured. Google starts with an expired access token
     /// (so the first read refreshes it); WHOOP is never connected.
     pub sources: bool,
+    /// The per-key bucket of the costly routes; 0 = disabled (the default).
+    pub costly_per_minute: u32,
+    /// WebSocket idle close and key re-check; `None` = the service's.
+    pub ws_idle: Option<std::time::Duration>,
+    pub ws_recheck: Option<std::time::Duration>,
 }
 
 pub struct Harness {
@@ -212,7 +217,10 @@ pub async fn harness_with(opts: Options) -> Harness {
     } else {
         None
     };
-    let db = Db::in_memory().unwrap();
+    // OAuth tokens sealed, as on the droplet.
+    let db = Db::in_memory()
+        .unwrap()
+        .with_token_key(&opus_api::db::TokenKey::parse(&[42u8; 32]).unwrap());
     // Intel always points at a stub: tests never reach the real wires.
     let il = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let intel_base = format!("http://{}", il.local_addr().unwrap());
@@ -273,6 +281,15 @@ pub async fn harness_with(opts: Options) -> Harness {
             intel,
             pairings: Default::default(),
             session_agents: Default::default(),
+            limits: {
+                let d = Limits::default();
+                Limits {
+                    costly: Arc::new(RateLimiter::new(opts.costly_per_minute)),
+                    ws_idle: opts.ws_idle.unwrap_or(d.ws_idle),
+                    ws_recheck: opts.ws_recheck.unwrap_or(d.ws_recheck),
+                    ..d
+                }
+            },
         },
         &opts.allowed_origins,
     );
@@ -338,6 +355,35 @@ pub async fn call_raw(
     let headers = res.headers().clone();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     (status, headers, bytes)
+}
+
+/// A bodiless request as if Caddy forwarded it for `peer`; status and JSON.
+pub async fn call_from(
+    h: &Harness,
+    method: Method,
+    path: &str,
+    peer: &str,
+    key: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("x-forwarded-for", peer);
+    if let Some(k) = key {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {k}"));
+    }
+    let res = h
+        .app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// A raw (non-JSON) request body with its own content type; the response

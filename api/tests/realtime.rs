@@ -3,7 +3,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_envelope, call, harness, harness_with, Options};
+use common::{assert_envelope, call, call_from, harness, harness_with, Options};
 use futures_util::{SinkExt, StreamExt};
 use opus_api::auth::keys::Scope;
 use serde_json::{json, Value};
@@ -274,6 +274,148 @@ async fn rate_limit_is_per_key_with_retry_after() {
     assert_eq!(status, StatusCode::OK, "another key is unaffected");
     let (status, _, _) = call(&h, Method::GET, "/v1/health", None, None).await;
     assert_eq!(status, StatusCode::OK, "public routes are not limited");
+}
+
+#[tokio::test]
+async fn failed_auth_is_throttled_per_address_before_the_lookup() {
+    let h = harness().await;
+    let good = h.key("mac", &[Scope::FleetRead]);
+    let guesser = "203.0.113.9";
+    let bad = "osk_00000000_0000000000000000000000000000000000000000000000000000000000000000";
+    for _ in 0..opus_api::v1::AUTH_FAILURES_PER_MINUTE {
+        let (status, _) = call_from(&h, Method::GET, "/v1/me", guesser, Some(bad)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, json) = call_from(&h, Method::GET, "/v1/me", guesser, Some(&good)).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "even a good key, from there: {json}"
+    );
+    assert_envelope(&json, "rate_limited");
+    let (status, _) = call_from(&h, Method::GET, "/v1/me", "198.51.100.1", Some(&good)).await;
+    assert_eq!(status, StatusCode::OK, "another address is unaffected");
+}
+
+#[tokio::test]
+async fn costly_routes_have_their_own_smaller_bucket() {
+    let h = harness_with(Options {
+        costly_per_minute: 1,
+        ..Options::default()
+    })
+    .await;
+    let key = h.key("mac", &[Scope::Inference]);
+    let chat = json!({"model": "qwen3:8b", "messages": [{"role": "user", "content": "hi"}], "stream": false});
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/inference/chat",
+        Some(&key),
+        Some(chat.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        "/v1/inference/chat",
+        Some(&key),
+        Some(chat),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{json}");
+    let (status, _, _) = call(&h, Method::GET, "/v1/inference/models", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK, "listing models is not costly");
+}
+
+/// Frames until the server's `closed`; its reason.
+async fn closed_reason(ws: &mut Socket) -> Value {
+    loop {
+        let f = next_json(ws).await;
+        if f["type"] == "closed" {
+            return f["reason"].clone();
+        }
+    }
+}
+
+#[tokio::test]
+async fn websocket_closes_when_idle() {
+    let h = harness_with(Options {
+        ws_idle: Some(Duration::from_millis(300)),
+        ..Options::default()
+    })
+    .await;
+    let key = h.all_scopes_key();
+    let mut ws = connect(&h.ws_url("/v1/sessions/sesn_live/ws"), Some(&key))
+        .await
+        .unwrap();
+    assert_eq!(closed_reason(&mut ws).await, "idle");
+}
+
+#[tokio::test]
+async fn websocket_closes_when_its_key_is_revoked() {
+    let h = harness_with(Options {
+        ws_recheck: Some(Duration::from_millis(100)),
+        ..Options::default()
+    })
+    .await;
+    let key = h.all_scopes_key();
+    let mut ws = connect(&h.ws_url("/v1/sessions/sesn_live/ws"), Some(&key))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut ws).await["type"], "hello");
+    let id = key.split('_').nth(1).unwrap();
+    assert!(h.db.revoke_key(id).unwrap());
+    assert_eq!(closed_reason(&mut ws).await, "key_revoked");
+}
+
+#[tokio::test]
+async fn websocket_frames_spend_the_key_limit_and_are_capped_in_size() {
+    let h = harness_with(Options {
+        rate_limit_per_minute: 3,
+        ..Options::default()
+    })
+    .await;
+    let key = h.all_scopes_key();
+    let mut ws = connect(
+        &h.ws_url("/v1/sessions/sesn_live/ws?history=false"),
+        Some(&key),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next_json(&mut ws).await["type"], "hello");
+    // The upgrade spent one; two frames are left.
+    let mut replies = Vec::new();
+    for _ in 0..3 {
+        send_json(&mut ws, json!({"type": "ping"})).await;
+        loop {
+            let f = next_json(&mut ws).await;
+            if f["type"] != "event" {
+                replies.push(f);
+                break;
+            }
+        }
+    }
+    assert_eq!(replies[0]["type"], "pong");
+    assert_eq!(replies[1]["type"], "pong");
+    assert_eq!(
+        replies[2]["error"]["type"], "rate_limited",
+        "{}",
+        replies[2]
+    );
+
+    // Over 1 MB: the server drops the connection.
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = ws.send(Message::Text("x".repeat(2 << 20).into())).await;
+        loop {
+            match ws.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "an oversized message ends the socket");
 }
 
 #[tokio::test]

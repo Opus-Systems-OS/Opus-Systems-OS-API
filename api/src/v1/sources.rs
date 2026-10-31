@@ -5,10 +5,12 @@
 //! send the browser back after consent, guarded by a one-time state.
 
 use super::AppState;
+use crate::auth::rate_limit::peer;
 use crate::error::{Error, Result};
 use crate::upstream::ops::Status;
 use crate::upstream::sources::oauth::{self, Provider};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -125,14 +127,29 @@ pub struct CallbackQuery {
     responses(
         (status = 200, description = "Connected; a short page to close", content_type = "text/html"),
         (status = 400, body = crate::openapi::ErrorBody, description = "refused, or an unknown/used/expired state"),
+        (status = 429, body = crate::openapi::ErrorBody, description = "Too many failed callbacks from this address"),
     ))]
 pub async fn callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     Query(q): Query<CallbackQuery>,
 ) -> Result<Html<String>> {
+    let who = peer(&headers);
+    let failures = &state.limits.auth_failures;
+    failures
+        .blocked(&who)
+        .map_err(|retry_after_secs| Error::RateLimited { retry_after_secs })?;
+    let res = connect(&state, &provider, q).await;
+    if res.is_err() {
+        let _ = failures.check(&who); // spend one failure
+    }
+    res
+}
+
+async fn connect(state: &AppState, provider: &str, q: CallbackQuery) -> Result<Html<String>> {
     let sources = state.sources.as_ref().as_ref().ok_or(Error::NotFound)?;
-    let p = Provider::parse(&provider).ok_or(Error::NotFound)?;
+    let p = Provider::parse(provider).ok_or(Error::NotFound)?;
     if let Some(err) = q.error {
         return Err(Error::InvalidRequest(format!(
             "{} consent was not given: {err}",

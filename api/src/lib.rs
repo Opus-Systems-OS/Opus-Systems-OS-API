@@ -11,16 +11,34 @@ pub mod sse;
 pub mod upstream;
 pub mod v1;
 
-use axum::http::{header, HeaderValue, Method};
+use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::Router;
+use std::time::Duration;
+use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 
-/// The complete application: `/v1` plus request ids, tracing and — when
-/// `allowed_origins` is non-empty — CORS for those exact origins.
+/// Longest a handler may take to produce its response head — above the
+/// longest upstream budget (a 120 s file upload). It ends at the head, so a
+/// stream or WebSocket runs on after it for as long as it stays open.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(150);
+/// Requests being handled at once, across every route; more wait their turn.
+pub const MAX_IN_FLIGHT: usize = 512;
+
+/// The complete application: `/v1` plus request ids, tracing, a timeout and
+/// a concurrency cap, and — when `allowed_origins` is non-empty — CORS for
+/// those exact origins.
 pub fn app(state: v1::AppState, allowed_origins: &[String]) -> Router {
     let mut router = v1::router(state)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
         .layer(axum::middleware::from_fn(request_id::layer))
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        // Global: `Router::layer` wraps each route, so a per-route limit
+        // would not cap the whole.
+        .layer(GlobalConcurrencyLimitLayer::new(MAX_IN_FLIGHT));
     if !allowed_origins.is_empty() {
         let origins: Vec<HeaderValue> = allowed_origins
             .iter()

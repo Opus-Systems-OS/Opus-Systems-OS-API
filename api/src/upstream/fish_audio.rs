@@ -58,6 +58,9 @@ impl FishAudio {
         let http = reqwest::Client::builder()
             .user_agent(concat!("opus-api/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))
+            // Whole request, audio body included.
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(FishAudio {
             http,
@@ -190,7 +193,10 @@ async fn provider_error(res: Response) -> Error {
         StatusCode::UNAUTHORIZED => "the voice provider rejected the API key".to_owned(),
         StatusCode::PAYMENT_REQUIRED => "voice credits are exhausted".to_owned(),
         StatusCode::SERVICE_UNAVAILABLE => "the voice provider is overloaded".to_owned(),
-        s => format!("voice provider answered {}: {}", s.as_u16(), body.trim()),
+        s => {
+            tracing::warn!(status = s.as_u16(), body = %body.trim(), "voice provider error");
+            format!("voice provider answered {}", s.as_u16())
+        }
     };
     Error::Upstream {
         status: status.as_u16(),

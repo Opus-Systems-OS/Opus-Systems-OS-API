@@ -1,8 +1,9 @@
-//! Per-key token bucket. `per_minute` is the sustained rate and also the
-//! burst (a full bucket); 0 disables. In memory only — one API process, and
-//! a limit that resets on restart is fine for what this protects against
-//! (a runaway client, not an adversary).
+//! Token buckets, keyed by a key id or a peer address. `per_minute` is the
+//! sustained rate and also the burst (a full bucket); 0 disables. In memory
+//! only — one API process, and a limit that resets on restart is fine for
+//! what this protects against (a runaway client, a guesser).
 
+use axum::http::HeaderMap;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -34,10 +35,16 @@ impl RateLimiter {
 
     /// `Ok(())` to proceed, `Err(retry_after_secs)` when the key is over.
     pub fn check(&self, key_id: &str) -> Result<(), u32> {
-        self.check_at(key_id, Instant::now())
+        self.check_at(key_id, Instant::now(), true)
     }
 
-    fn check_at(&self, key_id: &str, now: Instant) -> Result<(), u32> {
+    /// Like `check`, without spending a token: for a bucket charged only on
+    /// failure, asked before the attempt.
+    pub fn blocked(&self, key_id: &str) -> Result<(), u32> {
+        self.check_at(key_id, Instant::now(), false)
+    }
+
+    fn check_at(&self, key_id: &str, now: Instant, spend: bool) -> Result<(), u32> {
         if self.per_minute == 0 {
             return Ok(());
         }
@@ -55,13 +62,29 @@ impl RateLimiter {
         b.tokens = (b.tokens + elapsed * per_sec).min(capacity);
         b.last = now;
         if b.tokens >= 1.0 {
-            b.tokens -= 1.0;
+            if spend {
+                b.tokens -= 1.0;
+            }
             Ok(())
         } else {
             let wait = (1.0 - b.tokens) / per_sec;
             Err(wait.ceil().max(1.0) as u32)
         }
     }
+}
+
+/// The caller's address, for the per-address buckets: the first
+/// `X-Forwarded-For` hop (Caddy replaces the header with the client it
+/// saw), else "unknown" — every direct caller shares one bucket, which only
+/// happens in tests and on the compose network.
+pub fn peer(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 #[cfg(test)]
@@ -73,16 +96,39 @@ mod tests {
         let rl = RateLimiter::new(60); // 1/s sustained, burst 60
         let t0 = Instant::now();
         for _ in 0..60 {
-            assert!(rl.check_at("k", t0).is_ok());
+            assert!(rl.check_at("k", t0, true).is_ok());
         }
-        assert_eq!(rl.check_at("k", t0), Err(1));
+        assert_eq!(rl.check_at("k", t0, true), Err(1));
         // Another key is unaffected.
-        assert!(rl.check_at("other", t0).is_ok());
+        assert!(rl.check_at("other", t0, true).is_ok());
         // 2.5 s later: two tokens back.
         let t1 = t0 + Duration::from_millis(2500);
-        assert!(rl.check_at("k", t1).is_ok());
-        assert!(rl.check_at("k", t1).is_ok());
-        assert!(rl.check_at("k", t1).is_err());
+        assert!(rl.check_at("k", t1, true).is_ok());
+        assert!(rl.check_at("k", t1, true).is_ok());
+        assert!(rl.check_at("k", t1, true).is_err());
+    }
+
+    #[test]
+    fn blocked_peeks_without_spending() {
+        let rl = RateLimiter::new(2);
+        let t0 = Instant::now();
+        for _ in 0..5 {
+            assert!(rl.check_at("p", t0, false).is_ok());
+        }
+        assert!(rl.check_at("p", t0, true).is_ok());
+        assert!(rl.check_at("p", t0, true).is_ok());
+        assert!(
+            rl.check_at("p", t0, false).is_err(),
+            "empty after two failures"
+        );
+    }
+
+    #[test]
+    fn peer_is_the_first_forwarded_hop() {
+        let mut h = HeaderMap::new();
+        assert_eq!(peer(&h), "unknown");
+        h.insert("x-forwarded-for", "203.0.113.9, 10.0.0.2".parse().unwrap());
+        assert_eq!(peer(&h), "203.0.113.9");
     }
 
     #[test]

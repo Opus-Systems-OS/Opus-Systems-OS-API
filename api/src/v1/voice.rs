@@ -5,6 +5,7 @@
 //! speech service of their own. What was said is never logged.
 
 use super::AppState;
+use crate::auth::rate_limit::RateLimiter;
 use crate::error::{Error, Result};
 use axum::body::Body;
 use axum::body::Bytes;
@@ -14,6 +15,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -197,9 +199,12 @@ pub async fn transcribe(
     Ok(Json(out))
 }
 
-pub fn router() -> OpenApiRouter<AppState> {
+pub fn router(costly: Arc<RateLimiter>) -> OpenApiRouter<AppState> {
     let text = OpenApiRouter::new()
-        .routes(routes!(speak))
+        .merge(super::costly(
+            costly,
+            OpenApiRouter::new().routes(routes!(speak)),
+        ))
         .routes(routes!(info))
         .routes(routes!(credit))
         .route_layer(DefaultBodyLimit::max(64 * 1024));

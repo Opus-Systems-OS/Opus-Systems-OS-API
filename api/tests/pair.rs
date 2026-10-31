@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
-use common::{assert_envelope, call, harness};
+use common::{assert_envelope, call, call_from, harness};
 use opus_api::auth::keys::Scope;
 use serde_json::json;
 
@@ -226,4 +226,66 @@ async fn starting_is_rate_limited_per_address() {
         StatusCode::TOO_MANY_REQUESTS,
         "an address cannot mint codes without limit"
     );
+}
+
+#[tokio::test]
+async fn pending_codes_are_capped_across_addresses() {
+    let h = harness().await;
+    // Ten addresses, two each: twenty pending, the most allowed.
+    for i in 0..opus_api::v1::pair::MAX_PENDING {
+        let peer = format!("198.51.100.{}", i / 2);
+        let (status, json) = call_from(&h, Method::POST, "/v1/pair", &peer, None).await;
+        assert_eq!(status, StatusCode::CREATED, "start {i}: {json}");
+    }
+    // A fresh address is still refused: the table is full.
+    let (status, json) = call_from(&h, Method::POST, "/v1/pair", "203.0.113.1", None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{json}");
+    assert_envelope(&json, "rate_limited");
+}
+
+#[tokio::test]
+async fn approving_rotates_only_device_keys_of_that_name() {
+    let h = harness().await;
+    // A same-name key holding more than the device profile is not a device's.
+    let mac = h.key("mac", &[Scope::PairApprove, Scope::SessionsRead]);
+    let (_, _, started) = call(&h, Method::POST, "/v1/pair", None, None).await;
+    let code = started["code"].as_str().unwrap();
+    let (status, _, json) = call(
+        &h,
+        Method::POST,
+        &format!("/v1/pair/{code}/approve"),
+        Some(&mac),
+        Some(json!({"name":"mac"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let (status, _, _) = call(&h, Method::GET, "/v1/me", Some(&mac), None).await;
+    assert_eq!(status, StatusCode::OK, "the approver's own key survives");
+}
+
+#[tokio::test]
+async fn failed_claims_are_throttled_per_address() {
+    let h = harness().await;
+    let (_, _, started) = call(&h, Method::POST, "/v1/pair", None, None).await;
+    let code = started["code"].as_str().unwrap();
+    let token = started["token"].as_str().unwrap();
+    let guesser = "203.0.113.7";
+    for _ in 0..opus_api::v1::AUTH_FAILURES_PER_MINUTE {
+        let (status, _) = call_from(
+            &h,
+            Method::GET,
+            &format!("/v1/pair/{code}?token=wrong"),
+            guesser,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    // Out of failures: refused before the code is even looked at.
+    let right = format!("/v1/pair/{code}?token={token}");
+    let (status, json) = call_from(&h, Method::GET, &right, guesser, None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{json}");
+    // The device, from its own address, is unaffected.
+    let (status, _) = call_from(&h, Method::GET, &right, "198.51.100.20", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
 }

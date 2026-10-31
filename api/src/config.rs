@@ -1,6 +1,7 @@
 //! Environment-driven config. Names match the droplet's `.env` conventions
 //! from Iron-Fleet; the API reads only what it needs and ignores the rest.
 
+use crate::db::TokenKey;
 use crate::error::{Error, Result};
 use std::path::PathBuf;
 
@@ -8,6 +9,9 @@ use std::path::PathBuf;
 pub struct Config {
     pub port: u16,
     pub database_path: PathBuf,
+    /// Encrypts the OAuth tokens in the database (`TOKEN_KEY_FILE`). Unset
+    /// stores them in plaintext, as before.
+    pub token_key: Option<TokenKey>,
     /// The control plane, on the compose network: `http://control-plane:8080`.
     pub control_plane_url: String,
     /// The control plane's bearer — the API's own upstream credential, never
@@ -146,6 +150,14 @@ fn optional(name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// A secret kept in a file (a Docker secret under `/run/secrets`): the
+/// variable holds the path, never the secret.
+fn secret_file(name: &str) -> Result<Option<Vec<u8>>> {
+    optional(name)
+        .map(|path| std::fs::read(&path).map_err(|e| Error::Config(format!("{name}={path}: {e}"))))
+        .transpose()
+}
+
 impl Config {
     pub fn from_env() -> Result<Self> {
         let port = optional("PORT")
@@ -160,6 +172,15 @@ impl Config {
             database_path: optional("DATABASE_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("opus-api.db")),
+            token_key: secret_file("TOKEN_KEY_FILE")?
+                .map(|bytes| {
+                    TokenKey::parse(&bytes).ok_or_else(|| {
+                        Error::Config(
+                            "TOKEN_KEY_FILE must hold 32 bytes as 64 hex characters".into(),
+                        )
+                    })
+                })
+                .transpose()?,
             control_plane_url: required("CONTROL_PLANE_URL")?
                 .trim_end_matches('/')
                 .to_owned(),

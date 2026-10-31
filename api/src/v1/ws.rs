@@ -15,7 +15,13 @@
 //! - `{"type":"error","error":{"type":…,"message":…}}` — a client frame was
 //!   rejected; the socket stays open.
 //! - `{"type":"pong"}` — answer to `ping`.
-//! - `{"type":"closed","reason":…}` — last frame before the server closes.
+//! - `{"type":"closed","reason":…}` — last frame before the server closes:
+//!   `upstream_closed`, `idle` (five minutes without a frame either way —
+//!   a WebSocket ping counts) or `key_revoked` (re-checked every minute).
+//!
+//! A client message is at most 1 MB, and every client frame spends from the
+//! key's rate limit like a request; over it, the frame gets a
+//! `rate_limited` error frame.
 //!
 //! client → server
 //! - `{"type":"message","task":"…"}` (needs `sessions:write`)
@@ -92,9 +98,15 @@ pub async fn ws(
         .await?;
     let history = q.history.unwrap_or(true);
     tracing::info!(session = %id, history, deltas, "websocket opened");
-    let cp = state.control_plane.clone();
-    Ok(upgrade.on_upgrade(move |socket| run(socket, cp, who, id, request_id, upstream, history)))
+    Ok(upgrade
+        .max_message_size(MAX_FRAME_BYTES)
+        .max_frame_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| run(socket, state, who, id, request_id, upstream, history)))
 }
+
+/// Largest client message (and frame) the socket accepts; a `message` task
+/// or tool result is far smaller.
+const MAX_FRAME_BYTES: usize = 1 << 20;
 
 fn frame(v: Value) -> Message {
     Message::Text(v.to_string().into())
@@ -107,7 +119,7 @@ fn error_frame(e: &Error) -> Message {
 
 async fn run(
     socket: WebSocket,
-    cp: ControlPlane,
+    state: AppState,
     who: Principal,
     session_id: String,
     request_id: String,
@@ -141,9 +153,10 @@ async fn run(
         return;
     }
 
+    let cp = &state.control_plane;
     let mut seen: HashSet<String> = HashSet::new();
     if history {
-        match list_history(&cp, &session_id).await {
+        match list_history(cp, &session_id).await {
             Ok(events) => {
                 for ev in events {
                     if let Some(id) = ev["id"].as_str() {
@@ -165,10 +178,26 @@ async fn run(
         }
     }
 
+    // Closed after `ws_idle` with nothing either way, and when the key is
+    // revoked (re-read every `ws_recheck`): the upgrade checked it once.
+    let limits = &state.limits;
+    let idle = tokio::time::sleep(limits.ws_idle);
+    tokio::pin!(idle);
+    let mut recheck = tokio::time::interval_at(
+        tokio::time::Instant::now() + limits.ws_recheck,
+        limits.ws_recheck,
+    );
     let reason = loop {
         tokio::select! {
+            () = &mut idle => break "idle",
+            _ = recheck.tick() => match state.db.key(&who.key_id) {
+                Ok(Some(k)) if k.revoked_at.is_none() => {}
+                Ok(_) => break "key_revoked",
+                Err(e) => tracing::warn!(key = %who.key_id, error = %e, "websocket key re-check failed"),
+            },
             live = live_rx.recv() => match live {
                 Some(ev) => {
+                    idle.as_mut().reset(tokio::time::Instant::now() + limits.ws_idle);
                     // Delta previews (`event_start` / `event_delta`) are not
                     // events and carry no `id`; forward the text fragments
                     // as `delta` frames and drop the rest.
@@ -198,16 +227,28 @@ async fn run(
                 }
                 None => break "upstream_closed",
             },
-            incoming = rx.next() => match incoming {
-                Some(Ok(Message::Text(text))) => {
-                    let reply = handle_client_frame(&cp, &who, &session_id, &text).await;
-                    if tx.send(reply).await.is_err() {
-                        break "client_closed";
+            incoming = rx.next() => {
+                idle.as_mut().reset(tokio::time::Instant::now() + limits.ws_idle);
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        // Each frame spends from the key's bucket, like a request.
+                        let reply = match state.limiter.check(&who.key_id) {
+                            Ok(()) => handle_client_frame(cp, &who, &session_id, &text).await,
+                            Err(retry_after_secs) => {
+                                error_frame(&Error::RateLimited { retry_after_secs })
+                            }
+                        };
+                        if tx.send(reply).await.is_err() {
+                            break "client_closed";
+                        }
                     }
+                    Some(Ok(Message::Binary(_))) => {
+                        let _ = state.limiter.check(&who.key_id); // ignored, still counted
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break "client_closed",
+                    Some(Ok(_)) => {} // ping/pong handled by axum
                 }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break "client_closed",
-                Some(Ok(_)) => {} // binary, ping/pong handled by axum
-            },
+            }
         }
     };
     reader.abort();

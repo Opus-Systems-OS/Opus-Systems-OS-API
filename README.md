@@ -27,3 +27,20 @@ CI builds `ghcr.io/opus-systems-os/opus-systems-os-api/api` on every push
 to `main`. The droplet's compose project (in Iron-Fleet, `deploy/droplet/`)
 runs it beside the control plane; Caddy terminates TLS for
 `api.opustower.dev`.
+
+### OAuth tokens at rest
+
+The briefing's Google and WHOOP tokens are encrypted in the database
+(XChaCha20-Poly1305) when `TOKEN_KEY_FILE` names a file holding a 32-byte
+key as 64 hex characters:
+
+```sh
+umask 077 && openssl rand -hex 32 > secrets/token_key   # mount it at /run/secrets/token_key
+```
+
+With it set, tokens stored before encryption are read as they are and
+sealed in place on first use; nothing has to be re-consented. Without it,
+tokens stay in plaintext and the API logs a warning at startup. Keep the
+key apart from the database backups: either alone is useless, both together
+are the Gmail token. Losing the key means running `opus-api oauth start`
+again for each provider. The database file is `chmod 0600` on every start.

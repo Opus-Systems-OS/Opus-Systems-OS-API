@@ -142,9 +142,9 @@ Stage 2 (live):
 | `POST /v1/voice/transcribe` | `voice` | one utterance as the raw body, `content-type` `audio/wav` (16 kHz mono recommended), `audio/mpeg` or `audio/mp4`, ≤ 1 MiB; `?language=en` → `{text, duration}`. Fish ASR; WebM is refused (Fish can't decode it). What was said is never logged. |
 | `GET /v1/voice` | `voice` | `{configured, voice_id, model}` |
 | `GET /v1/ops` | `ops:read` | `{services: [{id, name, state, headline, checked_at}]}` — the configured services, hub order |
-| `POST /v1/pair` | none | Start pairing a device: `{code, token, expires_in}` (10 min; 10 starts/min per address) |
+| `POST /v1/pair` | none | Start pairing a device: `{code, token, expires_in}` (10 min; 10 starts/min per address; at most 20 pending, else 429) |
 | `GET /v1/pair/{code}?token=` | none | `202` until approved; then `{api_key, key_id, name, wit_token?, speaker?}` once |
-| `POST /v1/pair/{code}/approve` | `pair:approve` | `{name, wit_token?, speaker?}` → mints the device key (fixed profile), revokes older keys of that name |
+| `POST /v1/pair/{code}/approve` | `pair:approve` | `{name, wit_token?, speaker?}` → mints the device key (fixed profile), revokes older device keys of that name |
 | `GET /v1/ops/{service}` | `ops:read` | The same row with `detail` — `github`, `uptimerobot`, `droplet`, `docker`, `tailscale`, `cloudflare` |
 | `GET /v1/intel/feed` | `intel:read` | `{generated_at, items, sources: [{name, ok, count, error?}]}` — every source at once, cached 5 min; a failing source is a row, never a failed feed. An item is `{id, kind: news|quake|fire|storm|volcano|alert, title, summary, source, url, published?, lat?, lon?, place?, place_level?, region?, severity?, category, feed}` |
 | `GET /v1/intel/search?q=` | `intel:read` | `q` 1–80 chars → `{query, articles: [item], entries: [{title, description, extract, url}], errors?}` — Google News coverage + Wikipedia entries, cached 10 min per query |
@@ -175,10 +175,14 @@ device needs — the Wit.ai token for dictation, the Mac's `host:port` for
 music. Approval mints a key with the **fixed device profile**
 (`fleet:read, sessions:read, sessions:write, voice, ops:read, intel:read` — the body
 cannot ask for scopes, and `keys:admin` is unreachable this way), revokes
-any older key of the same name (so re-pairing rotates), and parks the
-bundle under the code. The device polls `GET /v1/pair/{code}?token=…` and
+any older device key of the same name (so re-pairing rotates), and parks the
+bundle under the code. A same-name key holding more than the device
+profile, or limited to some agents, was not minted by pairing and is left
+alone. The device polls `GET /v1/pair/{code}?token=…` and
 collects it exactly once; a code without its token collects nothing.
-Codes live ten minutes in memory.
+Codes live ten minutes in memory, at most 20 at a time, so a flood of
+starts cannot crowd the code space until a mistyped code lands on a
+stranger's device.
 
 ### Intel
 
@@ -297,7 +301,7 @@ Server → client, in order:
 | `{"type":"sent","data":[…]}` | Answer to `message` / `tool_result` / `interrupt`: the events appended |
 | `{"type":"error","error":{"type","message"}}` | A client frame was rejected (bad JSON, unknown type, empty task, missing scope, upstream error). The socket stays open |
 | `{"type":"pong"}` | Answer to `ping` |
-| `{"type":"closed","reason"}` | Last frame before the server closes. `upstream_closed` = the session's stream ended (session terminated or expired) |
+| `{"type":"closed","reason"}` | Last frame before the server closes. `upstream_closed` = the session's stream ended (session terminated or expired); `idle` = five minutes with no frame either way (a WebSocket ping counts); `key_revoked` = the key was revoked (checked every minute) |
 
 Client → server:
 
@@ -307,6 +311,8 @@ Client → server:
 | `{"type":"tool_result","custom_tool_use_id","content","is_error"?}` | `sessions:write` — answers an `agent.custom_tool_use` event |
 | `{"type":"interrupt"}` | `sessions:write` |
 | `{"type":"ping"}` | — |
+
+A client message is at most 1 MB; a bigger one ends the connection.
 
 The server opens the live stream *before* listing history, so an event
 emitted between the two is buffered and delivered once, after history.
@@ -318,7 +324,31 @@ the full transcript, with `history=false` only what happens next.
 Per key, token bucket: `RATE_LIMIT_PER_MINUTE` (default 300) is both the
 sustained rate and the burst. Over it → `429 rate_limited` with
 `Retry-After` in seconds. Public routes (`/v1/health`, the spec, the docs)
-are not limited. A WebSocket counts once, at the upgrade.
+are not limited. A WebSocket counts once at the upgrade and once per client
+frame after it (over the limit, the frame gets a `rate_limited` error
+frame).
+
+Three more buckets, all answering the same `429`:
+
+- **Costly routes**, per key, 30 a minute on top of the above:
+  `POST /v1/voice/speak`, `POST /v1/inference/chat`, `GET /v1/intel/search`.
+- **Failures**, per client address, 10 a minute: a missing, wrong or
+  revoked key, a wrong pairing code or token, a failed OAuth callback. Only
+  failures spend from it, and an address that is out is refused before its
+  key is looked up — a good key from there waits too.
+- **Pairing**: 10 starts a minute per address, and at most 20 codes pending
+  at once across all of them.
+
+Every request has 150 s to produce its response head (`504 upstream`
+after that); a stream or WebSocket then runs for as long as it is open.
+
+## Errors from upstream
+
+A caller-side error from upstream (`invalid_request`, `not_found`,
+`conflict`) keeps upstream's message, since it says what to fix. Anything
+upstream reports about its own failure (Anthropic's text, the rig's
+address, a provider's body) is logged with the request id and answered
+with a fixed message.
 
 ## CORS
 

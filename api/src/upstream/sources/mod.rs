@@ -89,6 +89,7 @@ impl Sources {
             .user_agent(concat!("opus-api/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::limited(3))
             .build()?;
         Ok(Sources {
             http,

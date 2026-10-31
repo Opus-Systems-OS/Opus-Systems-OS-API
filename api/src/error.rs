@@ -135,7 +135,9 @@ impl Error {
         }
     }
 
-    /// Message safe to return. Internal failures are not echoed.
+    /// Message safe to return. Internal failures are not echoed, and neither
+    /// is what an upstream says about its own failure (addresses, provider
+    /// text): that is in the log line `into_response` writes.
     fn public_message(&self) -> String {
         match self {
             Error::Config(_) | Error::Db(_) => "internal error".to_owned(),
@@ -143,7 +145,16 @@ impl Error {
             Error::Upstream { status: 401, .. } => {
                 "the gateway's control-plane credential was rejected".to_owned()
             }
-            Error::Upstream { message, .. } => message.clone(),
+            // The caller's own mistake: upstream's words say what to fix.
+            Error::Upstream { message, .. } if self.status().is_client_error() => message.clone(),
+            // Written here about a provider, never the provider's own text.
+            Error::Upstream { kind, message, .. } if kind == "voice" || kind == "sources" => {
+                message.clone()
+            }
+            Error::Upstream { .. } if self.kind() == "rig_offline" => {
+                "the GPU rig is offline".to_owned()
+            }
+            Error::Upstream { .. } => "the upstream service failed".to_owned(),
             other => other.to_string(),
         }
     }
@@ -205,6 +216,8 @@ pub fn envelope_for_status(status: StatusCode, text: &str) -> Envelope {
         StatusCode::FORBIDDEN => "forbidden",
         StatusCode::TOO_MANY_REQUESTS => "rate_limited",
         StatusCode::CONFLICT => "conflict",
+        // `TimeoutLayer`: the handler (in practice, its upstream) took too long.
+        StatusCode::GATEWAY_TIMEOUT => "upstream",
         s if s.is_client_error() => "invalid_request",
         _ => "internal",
     };

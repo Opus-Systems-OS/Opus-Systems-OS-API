@@ -68,7 +68,7 @@ api/src/main.rs          CLI: serve (default) | keys create|list|revoke
 api/src/lib.rs           app(): /v1 + request-id + trace layers
 api/src/config.rs        PORT, DATABASE_PATH, CONTROL_PLANE_URL, CONTROL_PLANE_TOKEN,
                          RATE_LIMIT_PER_MINUTE, ALLOWED_ORIGINS, FISH_AUDIO_API_KEY,
-                         JARVIS_VOICE_ID, FISH_AUDIO_MODEL
+                         JARVIS_VOICE_ID, FISH_AUDIO_MODEL, TOKEN_KEY_FILE
 api/src/error.rs         Error → status + envelope
 api/src/request_id.rs    x-request-id, span, final error body
 api/src/db.rs            SQLite: api_keys; migrate()
