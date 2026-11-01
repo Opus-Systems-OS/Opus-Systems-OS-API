@@ -106,7 +106,8 @@ pub struct OpsConfig {
     pub github_token: Option<String>,
     /// The GitHub organisation whose repos are watched.
     pub github_org: String,
-    /// Path of the Docker engine socket, mounted read-only into the container.
+    /// The Docker engine: a unix socket path, or `tcp://host:port` to a socket
+    /// proxy that only allows container listings.
     pub docker_socket: Option<PathBuf>,
 }
 
